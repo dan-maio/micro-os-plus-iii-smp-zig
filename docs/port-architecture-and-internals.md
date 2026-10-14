@@ -985,20 +985,27 @@ In `micro-os-plus-iii-cortexm/build.zig`, tests are enumerated and conditionally
 ```zig
 const tests = [_]Test{
     .{ .name = "smp-test0" },
-    .{ .name = "smp-test1" },
     .{ .name = "smp-test2", .smp_only = true },
-    .{ .name = "smp-mat-test" },
-    .{ .name = "fp-switch" },
+    .{ .name = "smp-test5", .only = .pico2 },
     .{ .name = "mutex-stress" },
-    .{ .name = "rtos-apis" },
-    .{ .name = "io-test" },
+    .{
+        .name = "rtos-apis",
+        .c_sources = &.{"test/rtos-apis/test-c-api.c"},
+        .c_flags = &.{ "-std=c11", "-DOS_INTEGER_RTOS_DEFAULT_STACK_SIZE_BYTES=2048", "-DOS_INTEGER_SYSTICK_FREQUENCY_HZ=1000" },
+    },
+    .{
+        .name = "cmsis-os-validator",
+        .c_sources = &.{"test/cmsis-os-validator/validator-glue.c"},
+        .c_flags = &.{ "-std=gnu11", "-DTRACE", "-DOS_USE_OS_APP_CONFIG_H" },
+        .cmsis_rv = true,
+    },
+    // ...
 };
 ```
-When building for a single-core board like `weactf411`, `build.zig` automatically checks:
-```zig
-if (t.smp_only and board.ncpu < 2) continue;
-```
-This excludes multi-core tests without generating compilation errors.
+- `smp_only` skips the test on single-core boards; `only` keeps it on one board.
+- A test ported one to one from a board's C++ folder is listed in `board_tests` and lives in `test/<board>/<test>/main.zig`; it replaces the generic `test/<test>/main.zig`.
+- `c_sources`/`c_flags` link C code with the test; the kernel's C include folders (`addCIncludes()`) and `test/<test>/include` are added.
+- `cmsis_rv` also compiles the Arm CMSIS-RTOS validator sources from the xPack given with `-Dcmsis_rv` (default `~/.local/xPacks/@xpacks/arm-cmsis-rtos-validator/1.0.0-4`); without it the test is skipped.
 
 ---
 
@@ -1048,47 +1055,79 @@ The runner script `test/hw.sh` orchestrates this via OpenOCD and ARM Semihosting
 
 ---
 
-## 8. Hardware Test Verification Matrix
+## 8. C Code: the C API, CMSIS-RTOS v1 and a Minimal C Runtime
 
-### 8.1 Raspberry Pi Pico 2 (RP2350 Dual Cortex-M33 SMP)
-*Probed with Raspberry Pi Debug Probe (`2e8a:000c`), SWD @ 5000 kHz.*
+C sources can be linked with the kernel and call it as in C++. There is one kernel only: the C functions are thin wrappers that convert their arguments and call the Zig objects; they have no logic of their own. Each layer is exported only when enabled in `uos.Options`.
 
-| Test | Status | Time | Verifications & Metrics |
-|---|---|---|---|
-| `exc-test` | **PASS** | 4s | M33 bare exception entry, SysTick on MSP, PendSV on PSP. |
-| `smp-test0` | **PASS** | 4s | Dual-core bring-up, 40 beats across Core 0 and Core 1. |
-| `smp-test1` | **PASS** | 4s | Thread creation, yield, cooperative and time-slice scheduling. |
-| `smp-test2` | **PASS** | 4s | CPU affinity pinning: 400 beats, 0 on wrong CPU. |
-| `smp-test3` | **PASS** | 5s | Multi-core priority scheduling and preemption. |
-| `smp-test4` | **PASS** | 5s | Cross-core synchronization and critical sections. |
-| `smp-test5` | **PASS** | 6s | Cross-core preemption and interrupt scheduling. |
-| `smp-mat-test` | **PASS** | 7s | Dual-core parallel matrix multiplication: $N=64$, speedup $\times 1.77$. |
-| `sc-test-ko` | **PASS** | 7s | Single-core kernel objects: 10/10 checks passed. |
-| `smp-test-ko` | **PASS** | 7s | Cross-core SMP kernel objects: 10/10 checks passed. |
-| `fp-switch` | **PASS** | 8s | Hardware FPU context switch: 12,600+ loops, 0 register errors. |
-| `mutex-stress` | **PASS** | 35s | 10 threads, 30s contention: 2,411 locks, 0 overlaps, 0 starvation. |
-| `rtos-apis` | **PASS** | 7s | Full API suite: 127/127 checks passed, sys-heap 0 leaks. |
-| `io-test` | **PASS** | 6s | `std.Io` async/await, groups, cancelable locks, devices: 25/25 passed. |
-| `smp-test-usb-cdc-acm` | **PASS** | 44s | USB CDC-ACM virtual serial device + UART0 bridge on SMP, live echoing & Escape exit. |
+| Layer | Option | Zig | Header | C++ counterpart |
+|---|---|---|---|---|
+| µOS++ C API (196 functions) | `c_api` | `src/c_api.zig` | `cmsis-plus/rtos/os-c-api.h` | `os-c-wrapper.cpp` |
+| CMSIS-RTOS v1 | `cmsis_os` | `src/cmsis_os.zig` | `cmsis-plus/legacy/cmsis_os.h` | `os-c-wrapper.cpp` (legacy part) |
+| Minimal C runtime | `c_runtime` | `src/libc.zig` | `c/stdio.h`, `c/string.h`, `c/assert.h`, `cmsis-plus/diag/trace.h` | newlib, `trace.cpp` |
 
----
+### 8.1 Object Storage
+The C application allocates the objects (`os_thread_t th;`, `osMutexDef(mx)`, ...) and passes pointers. In C++, `os-c-decls.h` mirrors the C++ class members; here the objects are opaque storage, in pointer words, large enough for the Zig objects:
+```c
+typedef struct os_thread_s
+{
+  _Alignas (8) void* storage[OS_C_THREAD_STORAGE_WORDS];
+} os_thread_t;
+```
+The Zig object lives at the start of the storage. The sizes are repeated in `src/c_storage.zig`: the build fails when a Zig object outgrows its storage, and a host test (`zig build test`) fails when the header disagrees. The types, enumerations and attribute structures are the C++ ones, so C code written for the C++ API compiles unchanged.
 
-### 8.2 WeAct Black Pill (STM32F411CE Cortex-M4F Single-Core)
-*Probed with WCH-Link CMSIS-DAP (`1a86:8011`), SWD @ 2000 kHz.*
+Threads and timers run C functions: the Zig object calls a trampoline, and the C function and its argument are kept in the storage after the Zig object. The same trampoline also runs the CMSIS-RTOS v1 thread functions (`void f(const void*)`).
 
-| Test | Status | Time | Verifications & Metrics |
-|---|---|---|---|
-| `smp-test0` | **PASS** | 27s | Cortex-M4 scheduler bring-up, 40 beats on cpu0. |
-| `smp-test1` | **PASS** | 13s | Thread yield, termination, pinned workers: 12/12 passed. |
-| `smp-mat-test` | **PASS** | 12s | Matrix solver computation and verification (`max \|dx\| = 0`). |
-| `sc-test-ko` | **PASS** | 20s | Full single-core kernel objects: 127/127 checks passed. |
-| `fp-switch` | **PASS** | 20s | Hardware FPU context switch: 12,656 loops, 0 errors. |
-| `mutex-stress` | **PASS** | 43s | 10 threads, 30s contention: 2,410 locks, 0 overlaps, 0 starvation. |
-| `rtos-apis` | **PASS** | 20s | Full API validation suite: 127/127 checks passed. |
-| `io-test` | **PASS** | 14s | `std.Io` async runtime, cancellation, descriptors, RAM disk: 25/25 passed. |
-| `spi-pipeline` | **PASS** | 45s | 8-iter dual-partition NOR flash stress, 128 chunks, Base64/CRC-32 clean. |
+### 8.2 Status Codes
+The C API returns the POSIX `errno` values of `rtos.errno()`. The CMSIS-RTOS v1 layer maps the results exactly as the C++ wrapper does. One difference comes from the kernels: the C++ `sleep_for()` returns `ETIMEDOUT` when the time elapsed, the Zig `sleepFor()` returns normally; `osDelay()` returns `osEventTimeout` in both cases.
+
+### 8.3 The Minimal C Runtime
+A freestanding target has no libc, and MicroZig's foundation-libc has no `printf`. `c_runtime` exports what the C tests need, with the output on the kernel trace channel: `printf`, `vprintf`, `snprintf`, `vsnprintf`, `fprintf`, `vfprintf`, `fflush`, `puts`, `putchar`; `strlen`, `strcmp`, `strncmp`, `strcpy`, `strncpy`, `strchr`, `strrchr` (the `mem*` functions come from compiler_rt); `assert` (to the Zig panic handler); `trace_printf` and the other `trace_*` functions. Hosted targets use their own libc instead.
+
+### 8.4 What is Not Provided
+`os_thread_get_user_storage()` (the kernel has no thread user storage) and the C startup hooks (`os-hooks.h`). `os_thread_attr_t.th_cpu_affinity` is always present (C++: only with `OS_USE_SMP_SCHEDULER`).
 
 ---
 
-## 9. Conclusion
+## 9. Hardware Test Verification Matrix
+
+Every test is a faithful port of a C++ test (same banners, lines, LED behaviour and verdict); the deviations are stated in each `main.zig`. The harness suites (`fp-switch`, `mutex-stress`, `rtos-apis`, `cmsis-os-validator`) run as in the C++ pico2 harness build: one CPU, with the suite's `os-app-config.h` values.
+
+### 9.1 Raspberry Pi Pico 2 (RP2350 Dual Cortex-M33 SMP)
+*Probed with the Raspberry Pi Debug Probe (`2e8a:000c`). Reset or power cycle the board between tests.*
+
+| Test | Status | Notes |
+|---|---|---|
+| `smp-test0` | **PASS** | Dual-core bring-up. |
+| `smp-test1` | **PASS** | |
+| `smp-test2` | **PASS** | CPU affinity. |
+| `smp-test3` | **PASS** | Resume IPI, kernel and direct phases (fixed in C++ too). |
+| `smp-test4` | **PASS** | |
+| `smp-test5` | **PASS** | |
+| `smp-mat-test` | **PASS** | Speedup 2.016×. |
+| `sc-test-ko` | **PASS** | Single core, 10/10. |
+| `smp-test-ko` | **PASS** | 10/10. |
+| `exc-test` | **PASS** | Phase B handler mode on its own MSP stack (as the fixed C++ test). |
+| `smp-test-usb-cdc-acm` | **PASS** | After a reset; without one it panics at start (USB state kept from the previous test). |
+| `fp-switch` | **PASS** | 3681 rounds, 0 bad. |
+| `mutex-stress` | **PASS** | 10 threads, 35 s report: sigma 7, delta within ±6 %. |
+| `rtos-apis` | **PASS** | C++ API, C API (`test-c-api.c`), ISO and POSIX I/O parts. |
+| `cmsis-os-validator` | **PASS** | Arm CMSIS-RTOS validator, 60/60. |
+| `io-test` | **PASS** | `std.Io` suite, 25/25. |
+
+### 9.2 WeAct Black Pill (STM32F411CE Cortex-M4F Single-Core)
+*Probed with a WCH-Link in ARM mode (`1a86:8011`). It may drop the connection under heavy semihosting traffic; reset and run again.*
+
+| Test | Status | Notes |
+|---|---|---|
+| `smp-test0` | **PASS** | |
+| `fp-switch` | **PASS** | 2474 rounds, 0 bad. |
+| `mutex-stress` | **PASS** | 35 s report: sigma 9, delta within ±5 %. |
+| `rtos-apis` | **PASS** | All four parts, as on the Pico 2. |
+| `cmsis-os-validator` | **PASS** | 60/60. |
+| `spi-pipeline` | **PASS** | 8/8. |
+| `smp-test1`, `smp-mat-test`, `sc-test-ko`, `io-test` | builds | Not run on this board in the last round. |
+
+---
+
+## 10. Conclusion
 The Zig port of µOS++ IIIe demonstrates that modern systems programming languages can achieve safety, expressiveness, and maintainability without sacrificing real-time determinism or silicon efficiency. Through compile-time static configuration, explicit memory allocators, SIO hardware spinlocks, clean MSP/PSP separation, and an automated OpenOCD test framework, the system delivers rock-solid SMP real-time performance on Cortex-M microcontrollers.
