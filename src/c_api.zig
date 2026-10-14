@@ -49,11 +49,11 @@ comptime {
 // ----------------------------------------------------------------------------
 // Storage.
 
-const storage_words = @import("c_storage.zig").words;
+pub const storage_words = @import("c_storage.zig").words;
 
 const storage_align = 8;
 
-fn storageBytes(comptime words: usize) usize {
+pub fn storageBytes(comptime words: usize) usize {
     return words * @sizeOf(usize);
 }
 
@@ -71,17 +71,20 @@ fn Tail(comptime T: type, comptime X: type) type {
         const offset = std.mem.alignForward(usize, @sizeOf(T), @alignOf(X));
         const size = offset + @sizeOf(X);
 
-        fn of(obj: *T) *X {
+        pub fn of(obj: *T) *X {
             return @ptrFromInt(@intFromPtr(obj) + offset);
         }
     };
 }
 
-const CThreadFunc = *const fn (args: ?*anyopaque) callconv(.c) ?*anyopaque;
-const CTimerFunc = *const fn (args: ?*anyopaque) callconv(.c) void;
+pub const CThreadFunc = *const fn (args: ?*anyopaque) callconv(.c) ?*anyopaque;
+/// A CMSIS-RTOS v1 thread function (`os_pthread`).
+pub const V1ThreadFunc = *const fn (args: ?*const anyopaque) callconv(.c) void;
+pub const CTimerFunc = *const fn (args: ?*anyopaque) callconv(.c) void;
 
-const ThreadTail = Tail(Thread, struct { func: CThreadFunc, args: ?*anyopaque });
-const TimerTail = Tail(Timer, struct { func: CTimerFunc, args: ?*anyopaque });
+pub const ThreadFunc = union(enum) { c: CThreadFunc, v1: V1ThreadFunc };
+pub const ThreadTail = Tail(Thread, struct { func: ThreadFunc, args: ?*anyopaque });
+pub const TimerTail = Tail(Timer, struct { func: CTimerFunc, args: ?*anyopaque });
 
 comptime {
     if (config.options.c_api) {
@@ -97,12 +100,12 @@ comptime {
 }
 
 /// Storage for the `os_*_new()` objects, from the system heap.
-fn newStorage(comptime T: type, comptime words: usize) ?*T {
+pub fn newStorage(comptime T: type, comptime words: usize) ?*T {
     const bytes = memory.allocator().alignedAlloc(u8, .fromByteUnits(storage_align), storageBytes(words)) catch return null;
     return @ptrCast(bytes.ptr);
 }
 
-fn freeStorage(obj: anytype, comptime words: usize) void {
+pub fn freeStorage(obj: anytype, comptime words: usize) void {
     const p: [*]align(storage_align) u8 = @ptrCast(@alignCast(obj));
     memory.allocator().free(p[0..storageBytes(words)]);
 }
@@ -110,7 +113,7 @@ fn freeStorage(obj: anytype, comptime words: usize) void {
 // ----------------------------------------------------------------------------
 // Conversions.
 
-const os_result_t = u32;
+pub const os_result_t = u32;
 const os_ok: os_result_t = 0;
 
 fn result(r: Error!void) os_result_t {
@@ -118,11 +121,11 @@ fn result(r: Error!void) os_result_t {
     return os_ok;
 }
 
-fn name(n: ?[*:0]const u8) [:0]const u8 {
+pub fn name(n: ?[*:0]const u8) [:0]const u8 {
     return if (n) |p| std.mem.span(p) else "-";
 }
 
-fn clockOf(c: ?*anyopaque) ?*Clock {
+pub fn clockOf(c: ?*anyopaque) ?*Clock {
     return @ptrCast(@alignCast(c));
 }
 
@@ -131,7 +134,7 @@ fn mode(m: u32) flags.Mode {
 }
 
 /// A constructor failed: as the C++ wrapper (an assert there), stop.
-fn failed(comptime what: []const u8, err: Error) noreturn {
+pub fn failed(comptime what: []const u8, err: Error) noreturn {
     std.debug.panic(what ++ "() failed: {s}", .{@errorName(err)});
 }
 
@@ -153,7 +156,7 @@ fn fromIrqState(s: u32) interrupts.State {
 
 /// A C buffer as a slice aligned for `T`: the start rounded up, the size
 /// reduced by as much.
-fn alignedBuffer(comptime alignment: usize, address: *anyopaque, size_bytes: usize) []align(alignment) u8 {
+pub fn alignedBuffer(comptime alignment: usize, address: *anyopaque, size_bytes: usize) []align(alignment) u8 {
     const raw = @intFromPtr(address);
     const start = std.mem.alignForward(usize, raw, alignment);
     const len = size_bytes -| (start - raw);
@@ -164,7 +167,7 @@ fn alignedBuffer(comptime alignment: usize, address: *anyopaque, size_bytes: usi
 // ----------------------------------------------------------------------------
 // The C attributes (os-c-decls.h).
 
-const ThreadAttr = extern struct {
+pub const ThreadAttr = extern struct {
     clock: ?*anyopaque = null,
     th_stack_address: ?*anyopaque = null,
     th_stack_size_bytes: usize = 0,
@@ -197,13 +200,13 @@ const SemaphoreAttr = extern struct {
     sm_initial_value: i16 = 0,
 };
 
-const MempoolAttr = extern struct {
+pub const MempoolAttr = extern struct {
     clock: ?*anyopaque = null,
     mp_pool_address: ?*anyopaque = null,
     mp_pool_size_bytes: usize = 0,
 };
 
-const MqueueAttr = extern struct {
+pub const MqueueAttr = extern struct {
     clock: ?*anyopaque = null,
     mq_queue_addr: ?*anyopaque = null,
     mq_queue_size_bytes: usize = 0,
@@ -234,16 +237,22 @@ fn mutexAttributes(a: *const MutexAttr) rtos.mutex.Attributes {
 fn threadTrampoline(args: ?*anyopaque) ?*anyopaque {
     const th: *Thread = @ptrCast(@alignCast(args.?));
     const tail = ThreadTail.of(th);
-    return tail.func(tail.args);
+    switch (tail.func) {
+        .c => |f| return f(tail.args),
+        .v1 => |f| {
+            f(tail.args);
+            return null;
+        },
+    }
 }
 
-fn timerTrampoline(args: ?*anyopaque) void {
+pub fn timerTrampoline(args: ?*anyopaque) void {
     const tm: *Timer = @ptrCast(@alignCast(args.?));
     const tail = TimerTail.of(tm);
     tail.func(tail.args);
 }
 
-fn constructThread(th: *Thread, n: ?[*:0]const u8, func: CThreadFunc, args: ?*anyopaque, attr: ?*const ThreadAttr) Error!void {
+pub fn constructThread(th: *Thread, n: ?[*:0]const u8, func: ThreadFunc, args: ?*anyopaque, attr: ?*const ThreadAttr) Error!void {
     const a: *const ThreadAttr = attr orelse &.{};
     var za: Thread.Attributes = .{
         .stack_size_bytes = a.th_stack_size_bytes,
@@ -263,7 +272,7 @@ fn freeNewThread(th: *Thread) void {
     freeStorage(th, storage_words.thread);
 }
 
-fn constructMempool(mp: *MemoryPool, n: ?[*:0]const u8, blocks: usize, block_size_bytes: usize, attr: ?*const MempoolAttr) Error!void {
+pub fn constructMempool(mp: *MemoryPool, n: ?[*:0]const u8, blocks: usize, block_size_bytes: usize, attr: ?*const MempoolAttr) Error!void {
     const a: *const MempoolAttr = attr orelse &.{};
     const za: rtos.mempool.Attributes = .{ .clock = clockOf(a.clock) };
     if (a.mp_pool_address) |address| {
@@ -273,7 +282,7 @@ fn constructMempool(mp: *MemoryPool, n: ?[*:0]const u8, blocks: usize, block_siz
     }
 }
 
-fn constructMqueue(mq: *MessageQueue, n: ?[*:0]const u8, msgs: usize, msg_size_bytes: usize, attr: ?*const MqueueAttr) Error!void {
+pub fn constructMqueue(mq: *MessageQueue, n: ?[*:0]const u8, msgs: usize, msg_size_bytes: usize, attr: ?*const MqueueAttr) Error!void {
     const a: *const MqueueAttr = attr orelse &.{};
     const za: rtos.mqueue.Attributes = .{ .clock = clockOf(a.clock) };
     if (a.mq_queue_addr) |address| {
@@ -417,7 +426,7 @@ const api = struct {
     }
 
     pub fn os_thread_construct(th: *Thread, n: ?[*:0]const u8, func: CThreadFunc, args: ?*anyopaque, attr: ?*const ThreadAttr) callconv(.c) void {
-        constructThread(th, n, func, args, attr) catch |err| failed("os_thread_construct", err);
+        constructThread(th, n, .{ .c = func }, args, attr) catch |err| failed("os_thread_construct", err);
     }
 
     pub fn os_thread_destruct(th: *Thread) callconv(.c) void {
@@ -426,7 +435,7 @@ const api = struct {
 
     pub fn os_thread_new(n: ?[*:0]const u8, func: CThreadFunc, args: ?*anyopaque, attr: ?*const ThreadAttr) callconv(.c) ?*Thread {
         const th = newStorage(Thread, storage_words.thread) orelse return null;
-        constructThread(th, n, func, args, attr) catch |err| {
+        constructThread(th, n, .{ .c = func }, args, attr) catch |err| {
             freeNewThread(th);
             failed("os_thread_new", err);
         };

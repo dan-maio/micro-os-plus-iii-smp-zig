@@ -81,6 +81,10 @@ pub const Options = struct {
     /// implemented in c_api.zig), for C code linked with the kernel.
     c_api: bool = false,
 
+    /// Export the CMSIS-RTOS v1 API (include/cmsis-plus/legacy/cmsis_os.h,
+    /// implemented in cmsis_os.zig) over the C API objects.
+    cmsis_os: bool = false,
+
     /// Export a minimal C runtime for freestanding C code (printf, puts,
     /// string functions, assert; include/c/, implemented in libc.zig).
     /// Not for hosted targets, which have their own libc.

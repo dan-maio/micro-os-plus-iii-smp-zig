@@ -1,11 +1,13 @@
 //! A minimal C runtime for freestanding C code linked with the kernel
 //! (`Options.c_runtime`): the headers are in include/c/.
 //!
-//!   stdio.h    printf, vprintf, snprintf, vsnprintf, puts, putchar; the
-//!              output goes to the trace channel
-//!   string.h   strlen, strcmp, strncmp, strcpy, strncpy, strchr (memcpy,
-//!              memset, memmove and memcmp come from compiler_rt)
+//!   stdio.h    printf, vprintf, snprintf, vsnprintf, fprintf, vfprintf,
+//!              fflush, puts, putchar; the output goes to the trace channel
+//!   string.h   strlen, strcmp, strncmp, strcpy, strncpy, strchr, strrchr
+//!              (memcpy, memset, memmove and memcmp come from compiler_rt)
 //!   assert.h   assert() -> __assert_func() -> the Zig panic
+//!   trace.h    trace_printf, trace_vprintf, trace_puts, trace_putchar,
+//!              trace_write, trace_flush (cmsis-plus/diag/trace.h)
 //!
 //! The printf conversions are the usual subset: d i u x X o c s p %, the
 //! flags '-' '0' '+' ' ' '#', width and precision (also '*'), and the
@@ -23,6 +25,9 @@ comptime {
             .{ "vprintf", &vprintf },
             .{ "snprintf", &snprintf },
             .{ "vsnprintf", &vsnprintf },
+            .{ "fprintf", &fprintf },
+            .{ "vfprintf", &vfprintf },
+            .{ "fflush", &fflush },
             .{ "puts", &puts },
             .{ "putchar", &putchar },
             .{ "strlen", &strlen },
@@ -31,7 +36,14 @@ comptime {
             .{ "strcpy", &strcpy },
             .{ "strncpy", &strncpy },
             .{ "strchr", &strchr },
+            .{ "strrchr", &strrchr },
             .{ "__assert_func", &assertFunc },
+            .{ "trace_printf", &printf },
+            .{ "trace_vprintf", &vprintf },
+            .{ "trace_puts", &puts },
+            .{ "trace_putchar", &putchar },
+            .{ "trace_write", &traceWrite },
+            .{ "trace_flush", &traceFlush },
         }) |e| @export(e[1], .{ .name = e[0], .linkage = weak });
     }
 }
@@ -295,6 +307,24 @@ fn snprintf(buf: [*]u8, size: usize, fmt: [*:0]const u8, ...) callconv(.c) c_int
     return vsnprintf(buf, size, fmt, &ap);
 }
 
+/// There are no files: every stream is the trace channel.
+fn vfprintf(stream: ?*anyopaque, fmt: [*:0]const u8, ap: *std.builtin.VaList) callconv(.c) c_int {
+    _ = stream;
+    return vprintf(fmt, ap);
+}
+
+fn fprintf(stream: ?*anyopaque, fmt: [*:0]const u8, ...) callconv(.c) c_int {
+    var ap = @cVaStart();
+    defer @cVaEnd(&ap);
+    return vfprintf(stream, fmt, &ap);
+}
+
+/// The trace output is not buffered beyond a call.
+fn fflush(stream: ?*anyopaque) callconv(.c) c_int {
+    _ = stream;
+    return 0;
+}
+
 fn puts(s: [*:0]const u8) callconv(.c) c_int {
     trace.write(std.mem.span(s));
     trace.write("\n");
@@ -306,6 +336,13 @@ fn putchar(c: c_int) callconv(.c) c_int {
     trace.write(&.{b});
     return b;
 }
+
+fn traceWrite(buf: [*]const u8, nbyte: usize) callconv(.c) isize {
+    trace.write(buf[0..nbyte]);
+    return @intCast(nbyte);
+}
+
+fn traceFlush() callconv(.c) void {}
 
 // ----------------------------------------------------------------------------
 // string.h
@@ -349,6 +386,16 @@ fn strchr(s: [*:0]const u8, c: c_int) callconv(.c) ?[*:0]const u8 {
     while (true) : (i += 1) {
         if (s[i] == ch) return s + i;
         if (s[i] == 0) return null;
+    }
+}
+
+fn strrchr(s: [*:0]const u8, c: c_int) callconv(.c) ?[*:0]const u8 {
+    const ch: u8 = @truncate(@as(c_uint, @bitCast(c)));
+    var last: ?[*:0]const u8 = null;
+    var i: usize = 0;
+    while (true) : (i += 1) {
+        if (s[i] == ch) last = s + i;
+        if (s[i] == 0) return last;
     }
 }
 

@@ -43,6 +43,7 @@ comptime {
     // The C API and the C runtime export their symbols only when enabled
     // in the options.
     _ = @import("c_api.zig");
+    _ = @import("cmsis_os.zig");
     _ = @import("libc.zig");
 }
 
