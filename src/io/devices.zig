@@ -360,6 +360,54 @@ pub const Partition = struct {
     }
 };
 
+/// A block device whose operations are serialised by a mutex
+/// (`block_device_lockable`, `block_device_partition_lockable`).
+pub const LockedBlockDevice = struct {
+    inner: BlockDevice,
+    mutex: *Mutex,
+
+    pub fn device(self: *LockedBlockDevice, name: []const u8) Device {
+        return .{ .name = name, .kind = .{ .block = .{ .ptr = self, .vtable = &.{
+            .read_blocks = readBlocks,
+            .write_blocks = writeBlocks,
+            .block_size = blockSize,
+            .num_blocks = numBlocks,
+            .sync = sync,
+        } } } };
+    }
+
+    fn readBlocks(ptr: *anyopaque, buf: []u8, first: u64) Error!void {
+        const self: *LockedBlockDevice = @ptrCast(@alignCast(ptr));
+        self.mutex.lock() catch return error.InputOutput;
+        defer self.mutex.unlock() catch {};
+        return self.inner.readBlocks(buf, first);
+    }
+
+    fn writeBlocks(ptr: *anyopaque, buf: []const u8, first: u64) Error!void {
+        const self: *LockedBlockDevice = @ptrCast(@alignCast(ptr));
+        self.mutex.lock() catch return error.InputOutput;
+        defer self.mutex.unlock() catch {};
+        return self.inner.writeBlocks(buf, first);
+    }
+
+    fn blockSize(ptr: *anyopaque) usize {
+        const self: *LockedBlockDevice = @ptrCast(@alignCast(ptr));
+        return self.inner.blockSize();
+    }
+
+    fn numBlocks(ptr: *anyopaque) u64 {
+        const self: *LockedBlockDevice = @ptrCast(@alignCast(ptr));
+        return self.inner.numBlocks();
+    }
+
+    fn sync(ptr: *anyopaque) Error!void {
+        const self: *LockedBlockDevice = @ptrCast(@alignCast(ptr));
+        self.mutex.lock() catch return error.InputOutput;
+        defer self.mutex.unlock() catch {};
+        return self.inner.sync();
+    }
+};
+
 // ----------------------------------------------------------------------------
 // Registry and descriptors.
 

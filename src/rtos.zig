@@ -20,6 +20,7 @@ pub const rtclock = &clocks.rtclock;
 const thread_mod = @import("rtos/thread.zig");
 pub const Thread = thread_mod.Thread;
 pub const ThreadInclusive = thread_mod.ThreadInclusive;
+pub const ThreadStack = thread_mod.Stack;
 pub const this_thread = thread_mod.this_thread;
 pub const priority = thread_mod.priority;
 pub const Priority = thread_mod.Priority;
