@@ -132,7 +132,7 @@ pub const List = struct {
             inner: Iterator,
             pub fn next(it: *@This()) ?*T {
                 const links = it.inner.next() orelse return null;
-                return @fieldParentPtr(field, links);
+                return @alignCast(@fieldParentPtr(field, links));
             }
         };
     }

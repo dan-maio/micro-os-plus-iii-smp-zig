@@ -323,3 +323,77 @@ pub fn internalPrepareCpu(cpu: u32) void {
     boot_threads[cpu] = .{ .name = "boot" };
     setCurrentThread(cpu, &boot_threads[cpu]);
 }
+
+// ----------------------------------------------------------------------------
+// The blocking wait shared by the synchronisation objects.
+
+/// The current thread waiting in an object's list, with an optional
+/// timeout. Lives on the waiter's stack; must not move once linked.
+pub const Waiter = struct {
+    node: lists.WaitingThreadNode,
+    timeout_node: lists.TimeoutThreadNode,
+    clock: *clocks.Clock,
+    timed: bool,
+    deadline: clocks.Timestamp,
+
+    pub fn init(clock: *clocks.Clock, timeout: ?clocks.Duration) Waiter {
+        const crt = thread_mod.this_thread.thread();
+        const deadline = if (timeout) |t| clock.steadyNow() + t else 0;
+        return .{
+            .node = .{ .thread = crt },
+            .timeout_node = .init(deadline, crt),
+            .clock = clock,
+            .timed = timeout != null,
+            .deadline = deadline,
+        };
+    }
+
+    /// Link the current thread in `list` (and in the clock list when
+    /// timed). Call inside an interrupts critical section.
+    pub fn link(w: *Waiter, list: *lists.WaitingThreadsList) void {
+        if (w.timed) {
+            internalLinkNodeTimeout(list, &w.node, &w.clock.steady_list, &w.timeout_node);
+        } else {
+            internalLinkNode(list, &w.node);
+        }
+    }
+
+    /// Let the other threads run until resumed, unlink, and report why the
+    /// thread was resumed: normally, interrupted, or timed out.
+    pub fn sleep(w: *Waiter) Error!void {
+        port.scheduler.reschedule();
+        if (w.timed) internalUnlinkNodeTimeout(&w.node, &w.timeout_node) else internalUnlinkNode(&w.node);
+        if (w.node.thread.isInterrupted()) return error.Interrupted;
+        if (w.timed and w.clock.steadyNow() >= w.deadline) return error.TimedOut;
+    }
+};
+
+/// The standard blocking loop: return `tryFn(ctx)` as soon as it yields a
+/// value, waiting in `list` (at most `timeout` ticks of `clock`) between
+/// attempts. `tryFn` runs inside an interrupts critical section.
+pub fn waitFor(
+    comptime T: type,
+    list: *lists.WaitingThreadsList,
+    clock: *clocks.Clock,
+    timeout: ?clocks.Duration,
+    ctx: anytype,
+    comptime tryFn: fn (@TypeOf(ctx)) ?T,
+) Error!T {
+    if (interrupts.inHandlerMode()) return error.NotPermitted;
+    if (locked()) return error.NotPermitted;
+    {
+        const cs = interrupts.CriticalSection.enter();
+        defer cs.exit();
+        if (tryFn(ctx)) |v| return v;
+    }
+    var w: Waiter = .init(clock, timeout);
+    while (true) {
+        {
+            const cs = interrupts.CriticalSection.enter();
+            defer cs.exit();
+            if (tryFn(ctx)) |v| return v;
+            w.link(list);
+        }
+        try w.sleep();
+    }
+}

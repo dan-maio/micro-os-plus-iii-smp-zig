@@ -156,6 +156,13 @@ pub const Context = struct {
     port: port.Context = .{},
 };
 
+pub const IoCancel = struct {
+    /// A cancel request waits for the next cancellation point.
+    requested: bool = false,
+    /// `std.Io.CancelProtection.blocked`.
+    protected: bool = false,
+};
+
 pub const Statistics = struct {
     context_switches: u64 = 0,
     cpu_cycles: u64 = 0,
@@ -176,8 +183,13 @@ pub const Attributes = struct {
 };
 
 const prio_levels = priority;
+const thread_state = State;
+const thread_attributes = Attributes;
 
 pub const Thread = struct {
+    pub const State = thread_state;
+    pub const Attributes = thread_attributes;
+
     name: [:0]const u8 = "-",
 
     func: ?Func = null,
@@ -209,11 +221,13 @@ pub const Thread = struct {
     prio_assigned: Priority = prio_levels.none,
     prio_inherited: Priority = prio_levels.none,
     cpu_affinity: u32 = 0xFFFF_FFFF,
-    state: State = .undefined,
+    state: thread_state = .undefined,
     interrupted: bool = false,
 
     event_flags: flags.EventFlags = .{},
     statistics: Statistics = .{},
+    /// `std.Io` cancellation state of this thread (see `uos.Io`).
+    io_cancel: IoCancel = .{},
     context: Context = .{},
 
     // ------------------------------------------------------------------------
@@ -226,7 +240,7 @@ pub const Thread = struct {
         name: [:0]const u8,
         function: Func,
         args: ?*anyopaque,
-        attr: Attributes,
+        attr: thread_attributes,
         allocator: ?std.mem.Allocator,
     ) Error!void {
         th.* = .{ .name = name };
@@ -254,7 +268,7 @@ pub const Thread = struct {
         return th.internalConstruct(function, args, attr, elements[0 .. bytes.len / @sizeOf(StackElement)]);
     }
 
-    fn internalConstruct(th: *Thread, function: Func, args: ?*anyopaque, attr: Attributes, stack_mem: []StackElement) Error!void {
+    fn internalConstruct(th: *Thread, function: Func, args: ?*anyopaque, attr: thread_attributes, stack_mem: []StackElement) Error!void {
         if (interrupts.inHandlerMode()) return error.NotPermitted;
         if (attr.priority == prio_levels.none or attr.priority >= prio_levels.@"error") return error.InvalidArgument;
 
@@ -305,7 +319,7 @@ pub const Thread = struct {
 
     /// Allocate and initialise a thread whose object and stack come from
     /// `gpa`; release it with `destroy()`.
-    pub fn create(gpa: std.mem.Allocator, name: [:0]const u8, function: Func, args: ?*anyopaque, attr: Attributes) Error!*Thread {
+    pub fn create(gpa: std.mem.Allocator, name: [:0]const u8, function: Func, args: ?*anyopaque, attr: thread_attributes) Error!*Thread {
         const th = gpa.create(Thread) catch return error.OutOfMemory;
         errdefer gpa.destroy(th);
         try th.init(name, function, args, attr, gpa);
@@ -322,7 +336,7 @@ pub const Thread = struct {
     /// value is discarded. Release it with `destroy()`.
     pub fn spawn(
         gpa: std.mem.Allocator,
-        attr: Attributes,
+        attr: thread_attributes,
         name: [:0]const u8,
         comptime function: anytype,
         args: std.meta.ArgsTuple(@TypeOf(function)),
@@ -540,8 +554,8 @@ pub const Thread = struct {
         return @atomicLoad(bool, &th.interrupted, .acquire);
     }
 
-    pub fn getState(th: *const Thread) State {
-        return @atomicLoad(State, &th.state, .acquire);
+    pub fn getState(th: *const Thread) thread_state {
+        return @atomicLoad(thread_state, &th.state, .acquire);
     }
 
     pub fn stack(th: *Thread) *Stack {
@@ -644,7 +658,7 @@ pub const Thread = struct {
         {
             const cs = interrupts.CriticalSection.enter();
             defer cs.exit();
-            @atomicStore(State, &th.state, .destroyed, .release);
+            @atomicStore(thread_state, &th.state, .destroyed, .release);
             if (th.joiner) |joiner| {
                 if (joiner.state == .suspended and joiner.ready_node.links.isUnlinked()) {
                     scheduler.ready_threads_list.link(&joiner.ready_node);

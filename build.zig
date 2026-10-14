@@ -31,6 +31,14 @@ pub fn createModule(b: *std.Build, dep: *std.Build.Dependency, options: ModuleOp
     return mod;
 }
 
+/// The shared on-target test suites (`tests/suites.zig`), for a port's
+/// test applications; `uos` is the firmware's kernel module.
+pub fn createSuitesModule(b: *std.Build, dep: *std.Build.Dependency, uos: *std.Build.Module) *std.Build.Module {
+    const mod = b.createModule(.{ .root_source_file = dep.path("tests/suites.zig") });
+    mod.addImport("uos", uos);
+    return mod;
+}
+
 /// Wires the kernel and the port together (the two import each other).
 pub fn linkPort(uos: *std.Build.Module, port: *std.Build.Module) void {
     uos.addImport("uos_port", port);
@@ -46,7 +54,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run the host unit tests");
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("tests/host.zig"),
+            .root_source_file = b.path("src/host_tests.zig"),
             .target = target,
             .optimize = optimize,
         }),
