@@ -11,7 +11,7 @@
 # SYS_EXIT. The script tees OpenOCD's console to a log and stops at the
 # first "RESULT: PASS" or "RESULT: FAIL".
 #
-# Probes (override with OCD_PROBE='{0xVID 0xPID}'):
+# Probes (override with OCD_PROBE='0xVID 0xPID'):
 #   weactf411, weactf412   any CMSIS-DAP; a WCH-Link must be in ARM mode
 #                          (1a86:8011), hold ModeS while plugging it in
 #   nucleof411             the on-board ST-Link
@@ -38,11 +38,22 @@ if [[ "$OCD" == *"/xPacks/"* ]]; then
 fi
 
 KHZ="${ADAPTER_KHZ:-}"
+
+# With several CMSIS-DAP probes attached, pin the one of the board: the
+# WCH-Link (ARM mode) for the WeAct boards, the Raspberry Pi Debug Probe
+# for the Picos -- when they are plugged in.
+have_usb () { command -v lsusb >/dev/null && lsusb | grep -qi "ID $1"; }
+DEFAULT_PROBE=""
+case "$BOARD" in
+  weactf411|weactf412) have_usb 1a86:8011 && DEFAULT_PROBE="0x1a86 0x8011" ;;
+  pico|pico2)          have_usb 2e8a:000c && DEFAULT_PROBE="0x2e8a 0x000c" ;;
+esac
+PROBE="${OCD_PROBE:-$DEFAULT_PROBE}"
+PROBE_ARGS=()
+[[ -n "$PROBE" ]] && PROBE_ARGS=(-c "cmsis-dap vid_pid $PROBE")
 case "$BOARD" in
   weactf411|weactf412)
-    PROBE="${OCD_PROBE:-}"
-    CFG=(-f interface/cmsis-dap.cfg)
-    [[ -n "$PROBE" ]] && CFG+=(-c "cmsis-dap vid_pid $PROBE")
+    CFG=(-f interface/cmsis-dap.cfg "${PROBE_ARGS[@]}")
     CFG+=(-c "transport select swd" -c "adapter speed ${KHZ:-4000}" -f target/stm32f4x.cfg)
     RUN=(-c "init" -c "reset halt" -c "program \"$ELF\" verify"
          -c "arm semihosting enable" -c "reset run")
@@ -53,14 +64,14 @@ case "$BOARD" in
          -c "arm semihosting enable" -c "reset run")
     ;;
   pico2)
-    CFG=(-f interface/cmsis-dap.cfg -c "adapter speed ${KHZ:-5000}"
+    CFG=(-f interface/cmsis-dap.cfg "${PROBE_ARGS[@]}" -c "adapter speed ${KHZ:-5000}"
          -c "set USE_CORE { cm0 cm1 }" -c "set USE_SMP 0" -f target/rp2350.cfg)
     RUN=(-c "init" -c "reset init" -c "program \"$ELF\" verify" -c "reset init"
          -c "targets rp2350.cm1" -c "arm semihosting enable" -c "resume"
          -c "targets rp2350.cm0" -c "arm semihosting enable" -c "resume")
     ;;
   pico)
-    CFG=(-f interface/cmsis-dap.cfg -c "adapter speed ${KHZ:-5000}"
+    CFG=(-f interface/cmsis-dap.cfg "${PROBE_ARGS[@]}" -c "adapter speed ${KHZ:-5000}"
          -c "set USE_CORE { 0 1 }" -c "set USE_SMP 0" -f target/rp2040.cfg)
     RUN=(-c "init" -c "reset init" -c "program \"$ELF\" verify" -c "reset init"
          -c "targets rp2040.core1" -c "arm semihosting enable" -c "resume"

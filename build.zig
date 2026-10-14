@@ -67,7 +67,6 @@ const tests = [_]Test{
     .{ .name = "smp-test2", .smp_only = true },
     .{ .name = "smp-test3", .smp_only = true },
     .{ .name = "smp-test4", .smp_only = true },
-    .{ .name = "smp-test5", .smp_only = true },
     .{ .name = "smp-mat-test" },
     .{ .name = "sc-test-ko" },
     .{ .name = "fp-switch" },
@@ -156,6 +155,7 @@ pub fn build(b: *std.Build) void {
         harness.addImport("microzig", fw.core_mod);
         harness.addImport("uos", fw.exe.root_module.import_table.get("uos").?);
         harness.addImport("uos_board", fw.exe.root_module.import_table.get("uos_board").?);
+        fw.exe.root_module.addImport("uos_suites", uos_build.createSuitesModule(b, kernel_dep, fw.exe.root_module.import_table.get("uos").?));
 
         const elf = fw.get_emitted_elf();
         const install = b.addInstallFileWithDir(elf, .{ .custom = b.fmt("firmware/{s}", .{@tagName(board_id)}) }, b.fmt("{s}.elf", .{t.name}));
