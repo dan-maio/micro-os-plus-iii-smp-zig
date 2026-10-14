@@ -1,0 +1,14 @@
+.{
+    .name = .micro_os_plus_iii_cortexm,
+    .fingerprint = 0x95cd49afa981e1b1,
+    .version = "7.0.0",
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        // The portable kernel, the sibling repository.
+        .micro_os_plus_iii = .{ .path = "../micro-os-plus-iii" },
+        // MicroZig 0.17.x (startup, chips, the RP2xxx HAL). Point this at
+        // your copy; it must be a path relative to this folder.
+        .microzig = .{ .path = "../../../Downloads/MicroZIG-0.17.18/microzig" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "test", "LICENSE", "README.md" },
+}
