@@ -27,6 +27,14 @@ pub const Options = struct {
     /// the SMP kernel single-core.
     smp: bool = false,
 
+    /// SMP: when a thread is resumed from a CPU its affinity excludes, send
+    /// an IPI to a CPU it may run on, so it runs at once instead of at that
+    /// CPU's next tick. The C++ kernel has this branch but gates it on
+    /// `OS_INTEGER_RTOS_PORT_NCPU`, which nothing defines, so it is dead code
+    /// there; here it is on by default. Turn it off to reproduce the C++
+    /// behaviour (tick-delivered cross-CPU wakes).
+    resume_ipi: bool = true,
+
     /// SysTick rate (`OS_INTEGER_SYSTICK_FREQUENCY_HZ`).
     systick_frequency_hz: u32 = 1000,
 

@@ -374,7 +374,7 @@ pub fn matrixSolve(comptime n: usize) void {
 // migrations; every thread must see only its own values.
 
 const FpWorker = struct {
-    th: rtos.ThreadInclusive(2048) = undefined,
+    th: rtos.ThreadInclusive(8192) = undefined,
     seed: f32,
     errors: u32 = 0,
     loops: u32 = 0,
@@ -418,7 +418,7 @@ pub fn fpSwitch(duration_ms: u32) void {
         _ = w.th.thread.join() catch {};
         w.th.deinit();
     }
-    for (fp_workers, 0..) |w, i| {
+    for (&fp_workers, 0..) |*w, i| {
         uos.trace.print("fp{d}: {d} loops, {d} errors\n", .{ i, w.loops, w.errors });
         t.ok(w.loops > 0, @src());
         t.eq(@as(u32, 0), w.errors, @src());

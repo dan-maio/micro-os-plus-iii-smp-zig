@@ -83,6 +83,7 @@ const vtable: Io.VTable = blk: {
     v.futexWaitUncancelable = futexWaitUncancelable;
     v.futexWake = futexWake;
     v.operate = operate;
+    v.fileWritePositional = fileWritePositional;
     v.now = now;
     v.clockResolution = clockResolution;
     v.sleep = sleep;
@@ -430,8 +431,39 @@ fn random(userdata: ?*anyopaque, buffer: []u8) void {
 // Files: the standard output and error go to the trace channel.
 
 fn isConsole(file: Io.File) bool {
-    if (Io.File.Handle == void) return true;
-    return file.handle == std.posix.STDOUT_FILENO or file.handle == std.posix.STDERR_FILENO;
+    if (Io.File.Handle == void) {
+        return true;
+    } else {
+        return file.handle == std.posix.STDOUT_FILENO or file.handle == std.posix.STDERR_FILENO;
+    }
+}
+
+/// The standard output, on any target. On freestanding targets the
+/// `std.Io.File` handle is `void` and `std.Io.File.stdout()` does not exist;
+/// every file write of `uos.Io` goes to the trace channel there.
+pub fn stdout() Io.File {
+    if (Io.File.Handle == void) {
+        return .{ .handle = {}, .flags = .{ .nonblocking = false } };
+    } else {
+        return .stdout();
+    }
+}
+
+/// The standard error; see `stdout()`.
+pub fn stderr() Io.File {
+    if (Io.File.Handle == void) {
+        return .{ .handle = {}, .flags = .{ .nonblocking = false } };
+    } else {
+        return .stderr();
+    }
+}
+
+/// The console has no position: a positional write is a streaming one.
+fn fileWritePositional(userdata: ?*anyopaque, file: Io.File, header: []const u8, data: []const []const u8, splat: usize, offset: u64) Io.File.WritePositionalError!usize {
+    _ = offset;
+    if (!isConsole(file)) return error.Unseekable;
+    const r = operate(userdata, .{ .file_write_streaming = .{ .file = file, .header = header, .data = data, .splat = splat } }) catch return error.Unseekable;
+    return r.file_write_streaming catch error.Unseekable;
 }
 
 fn operate(userdata: ?*anyopaque, operation: Io.Operation) Io.Cancelable!Io.Operation.Result {

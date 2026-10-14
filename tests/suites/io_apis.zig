@@ -136,9 +136,9 @@ fn timeAndCancel(io: Io) void {
 }
 
 fn console(io: Io) void {
-    t.section("stdout through std.Io.File");
+    t.section("stdout through std.Io.File.Writer");
     var buf: [64]u8 = undefined;
-    var w = Io.File.stdout().writer(io, &buf);
+    var w = uos.Io.stdout().writer(io, &buf);
     w.interface.print("hello from std.Io.File.stdout() {d}\n", .{42}) catch t.ok(false, @src());
     w.interface.flush() catch t.ok(false, @src());
 }

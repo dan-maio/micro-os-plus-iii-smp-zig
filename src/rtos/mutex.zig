@@ -261,6 +261,7 @@ pub const Mutex = struct {
         if (interrupts.inHandlerMode()) return error.NotPermitted;
         if (scheduler.locked()) return error.NotPermitted;
         if (!mx.recoverable) return error.NotRecoverable;
+        if (crt.isInterrupted()) return error.Interrupted;
 
         {
             const scs = scheduler.CriticalSection.enter();
@@ -285,7 +286,27 @@ pub const Mutex = struct {
             // Remove the thread from the waiting list, if not done by the
             // unlock.
             scheduler.internalUnlinkNode(&node);
-            if (crt.isInterrupted()) return error.Interrupted;
+            if (crt.isInterrupted()) {
+                const scs = scheduler.CriticalSection.enter();
+                defer scs.exit();
+                if (mx.boosted_prio != priority.none) {
+                    var max_prio: Priority = priority.none;
+                    var it = mx.list.threads();
+                    while (it.next()) |th| max_prio = @max(max_prio, th.priority());
+                    if (max_prio != priority.none) {
+                        mx.boosted_prio = max_prio;
+                        if (mx.owner) |o| {
+                            const us = scheduler.UncriticalSection.enter();
+                            defer us.exit();
+                            o.setPriorityInherited(max_prio) catch {};
+                        }
+                    }
+                }
+                if (mx.owner == null) {
+                    _ = mx.list.resumeOne();
+                }
+                return error.Interrupted;
+            }
         }
     }
 
@@ -307,6 +328,7 @@ pub const Mutex = struct {
         if (interrupts.inHandlerMode()) return error.NotPermitted;
         if (scheduler.locked()) return error.NotPermitted;
         if (!mx.recoverable) return error.NotRecoverable;
+        if (crt.isInterrupted()) return error.Interrupted;
 
         {
             const scs = scheduler.CriticalSection.enter();
@@ -357,6 +379,9 @@ pub const Mutex = struct {
                             o.setPriorityInherited(max_prio) catch {};
                         }
                     }
+                }
+                if (mx.owner == null) {
+                    _ = mx.list.resumeOne();
                 }
                 if (tr.mutex and e == error.TimedOut) trace.print("Mutex.timedLock() @{*} {s} timeout\n", .{ mx, mx.name });
                 return e;

@@ -37,7 +37,8 @@ fn workerMain(arg: ?*anyopaque) ?*anyopaque {
     const me = rtos.this_thread.thread();
     while (!me.isInterrupted()) {
         busyWait(r.intRangeLessThan(u32, 10, 90));
-        rtos.sysclock.sleepFor(r.intRangeLessThan(u32, 10, 200)) catch {};
+        rtos.sysclock.sleepFor(r.intRangeLessThan(u32, 10, 200)) catch break;
+        if (me.isInterrupted()) break;
         mx.lock() catch break;
         {
             if (@atomicRmw(u32, &inside, .Add, 1, .acq_rel) != 0) overlaps += 1;
@@ -73,7 +74,7 @@ pub fn run(seconds: u32) u32 {
         {
             const scs = rtos.scheduler.CriticalSection.enter();
             defer scs.exit();
-            for (workers) |w| {
+            for (&workers) |*w| {
                 sum += w.count;
                 min = @min(min, w.count);
                 max = @max(max, w.count);
@@ -90,7 +91,7 @@ pub fn run(seconds: u32) u32 {
     }
 
     var min: u32 = std.math.maxInt(u32);
-    for (workers) |w| min = @min(min, w.count);
+    for (&workers) |*w| min = @min(min, w.count);
     t.eq(@as(u32, 0), overlaps, @src());
     t.expect(min > 0, @src(), "a thread starved", .{});
     t.ok(mx.getOwner() == null, @src());

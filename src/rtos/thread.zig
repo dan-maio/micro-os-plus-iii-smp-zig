@@ -412,7 +412,7 @@ pub const Thread = struct {
         }
         port.scheduler.reschedule();
 
-        if (ncpu > 1) {
+        if (ncpu > 1 and config.options.resume_ipi) {
             // When this CPU may not run the thread, wake one that may.
             const this_cpu = port.scheduler.cpuId();
             if (th.cpu_affinity & (@as(u32, 1) << @intCast(this_cpu)) == 0) {
@@ -660,9 +660,7 @@ pub const Thread = struct {
             defer cs.exit();
             @atomicStore(thread_state, &th.state, .destroyed, .release);
             if (th.joiner) |joiner| {
-                if (joiner.state == .suspended and joiner.ready_node.links.isUnlinked()) {
-                    scheduler.ready_threads_list.link(&joiner.ready_node);
-                }
+                joiner.@"resume"();
             }
         }
         port.scheduler.reschedule();

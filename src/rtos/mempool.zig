@@ -72,7 +72,8 @@ pub const MemoryPool = struct {
 
     /// Initialise with storage from `gpa`; `deinit()` releases it.
     pub fn create(mp: *MemoryPool, gpa: std.mem.Allocator, name: [:0]const u8, blocks: usize, block_size_bytes: usize, attr: Attributes) Error!void {
-        const buffer = gpa.alignedAlloc(u8, .of(usize), storageSize(blocks, block_size_bytes)) catch return error.OutOfMemory;
+        // 8: enough for the typed pools of u64/f64 on 32-bit targets.
+        const buffer = gpa.alignedAlloc(u8, .@"8", storageSize(blocks, block_size_bytes)) catch return error.OutOfMemory;
         errdefer gpa.free(buffer);
         try mp.init(name, blocks, block_size_bytes, buffer, attr);
         mp.allocator = gpa;
@@ -178,13 +179,17 @@ pub fn MemoryPoolTyped(comptime T: type) type {
 
         const Self = @This();
 
+        /// Blocks rounded to the alignment of `T` (which may exceed a pointer's).
+        pub const block_size = std.mem.alignForward(usize, @sizeOf(T), @max(@alignOf(T), @alignOf(usize)));
+
         pub fn init(self: *Self, name: [:0]const u8, blocks: usize, buffer: []align(@alignOf(usize)) u8, attr: Attributes) Error!void {
-            comptime assert(@alignOf(T) <= @alignOf(usize));
-            return self.pool.init(name, blocks, @sizeOf(T), buffer, attr);
+            if (@intFromPtr(buffer.ptr) % @alignOf(T) != 0) return error.InvalidArgument;
+            return self.pool.init(name, blocks, block_size, buffer, attr);
         }
 
         pub fn create(self: *Self, gpa: std.mem.Allocator, name: [:0]const u8, blocks: usize, attr: Attributes) Error!void {
-            return self.pool.create(gpa, name, blocks, @sizeOf(T), attr);
+            comptime assert(@alignOf(T) <= 8);
+            return self.pool.create(gpa, name, blocks, block_size, attr);
         }
 
         pub fn deinit(self: *Self) void {
@@ -211,7 +216,7 @@ pub fn MemoryPoolTyped(comptime T: type) type {
         pub fn Static(comptime blocks: usize) type {
             return struct {
                 typed: Self = .{},
-                buffer: [storageSize(blocks, @sizeOf(T))]u8 align(@alignOf(usize)) = undefined,
+                buffer: [storageSize(blocks, block_size)]u8 align(@max(@alignOf(T), @alignOf(usize))) = undefined,
 
                 pub fn init(s: *@This(), name: [:0]const u8, attr: Attributes) Error!void {
                     return s.typed.init(name, blocks, &s.buffer, attr);
