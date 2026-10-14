@@ -65,6 +65,27 @@ const Test = struct {
     /// `c_runtime`), and their flags.
     c_sources: []const []const u8 = &.{},
     c_flags: []const []const u8 = &.{},
+    /// Also the Arm CMSIS-RTOS validator sources (-Dcmsis_rv).
+    cmsis_rv: bool = false,
+};
+
+/// The arm-cmsis-rtos-validator xPack files compiled into
+/// cmsis-os-validator, as its CMakeLists.txt lists them.
+const cmsis_rv_sources = [_][]const u8{
+    "cmsis-plus/src/main.c",
+    "Source/RV_Framework.c",
+    "Source/cmsis_rv.c",
+    "Source/RV_Signal.c",
+    "Source/RV_Report.c",
+    "Source/RV_Thread.c",
+    "Source/RV_MailQueue.c",
+    "Source/RV_Timer.c",
+    "Source/RV_GenWait.c",
+    "Source/RV_WaitFunc.c",
+    "Source/RV_MemoryPool.c",
+    "Source/RV_MsgQueue.c",
+    "Source/RV_Mutex.c",
+    "Source/RV_Semaphore.c",
 };
 
 /// Tests ported one to one from a board's C++ test folder
@@ -110,6 +131,14 @@ const tests = [_]Test{
         .c_sources = &.{"test/rtos-apis/test-c-api.c"},
         // From the suite's os-app-config.h, as main.zig's uos_options.
         .c_flags = &.{ "-std=c11", "-DOS_INTEGER_RTOS_DEFAULT_STACK_SIZE_BYTES=2048", "-DOS_INTEGER_SYSTICK_FREQUENCY_HZ=1000" },
+    },
+    .{
+        .name = "cmsis-os-validator",
+        .c_sources = &.{"test/cmsis-os-validator/validator-glue.c"},
+        // TRACE as the C++ debug build: the validator prints with
+        // trace_printf().
+        .c_flags = &.{ "-std=gnu11", "-DTRACE", "-DOS_USE_OS_APP_CONFIG_H" },
+        .cmsis_rv = true,
     },
     .{ .name = "io-test" },
     .{ .name = "spi-pipeline", .only = .weactf411 },
@@ -168,6 +197,8 @@ pub fn build(b: *std.Build) void {
     const board_id = b.option(BoardId, "board", "The board (default pico2)") orelse .pico2;
     const only_test = b.option([]const u8, "test", "Build (and run) only this test");
     const run_timeout = b.option(u32, "timeout", "Seconds the run step waits for the verdict (default 600)") orelse 600;
+    const cmsis_rv: ?[]const u8 = b.option([]const u8, "cmsis_rv", "The arm-cmsis-rtos-validator xPack folder (default: the one in ~/.local/xPacks)") orelse
+        if (b.graph.environ_map.get("HOME")) |home| b.fmt("{s}/.local/xPacks/@xpacks/arm-cmsis-rtos-validator/1.0.0-4", .{home}) else null;
 
     const mz_dep = b.dependency("microzig", .{});
     const mb = MicroBuild.init(b, mz_dep) orelse return;
@@ -183,6 +214,7 @@ pub fn build(b: *std.Build) void {
         if (only_test) |name| if (!std.mem.eql(u8, name, t.name)) continue;
         if (t.smp_only and board.ncpu < 2) continue;
         if (t.only) |only| if (only != board_id) continue;
+        if (t.cmsis_rv and cmsis_rv == null) continue;
 
         const harness = b.createModule(.{ .root_source_file = b.path("test/harness.zig") });
 
@@ -204,6 +236,14 @@ pub fn build(b: *std.Build) void {
             uos_build.addCIncludes(kernel_dep, root, true);
             root.addIncludePath(b.path(b.fmt("test/{s}", .{t.name})));
             root.addCSourceFiles(.{ .files = t.c_sources, .flags = t.c_flags });
+            root.addIncludePath(b.path(b.fmt("test/{s}/include", .{t.name})));
+            if (t.cmsis_rv) {
+                const rv: std.Build.LazyPath = .{ .cwd_relative = cmsis_rv.? };
+                root.addIncludePath(rv.path(b, "Include"));
+                root.addIncludePath(rv.path(b, "cmsis-plus/include"));
+                root.addIncludePath(kernel_dep.path("include/cmsis-plus/legacy"));
+                root.addCSourceFiles(.{ .root = rv, .files = &cmsis_rv_sources, .flags = t.c_flags });
+            }
         }
 
         const elf = fw.get_emitted_elf();
