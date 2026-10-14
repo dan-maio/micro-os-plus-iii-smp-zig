@@ -39,7 +39,6 @@ pub fn createSuitesModule(b: *std.Build, dep: *std.Build.Dependency, uos: *std.B
     return mod;
 }
 
-/// Wires the kernel and the port together (the two import each other).
 /// Let `mod` compile C sources against the kernel: the µOS++ C API headers
 /// (include/cmsis-plus/rtos/os-c-api.h, `Options.c_api`) and, for
 /// freestanding targets, the minimal C runtime headers (include/c/,
@@ -49,6 +48,7 @@ pub fn addCIncludes(dep: *std.Build.Dependency, mod: *std.Build.Module, freestan
     if (freestanding) mod.addIncludePath(dep.path("include/c"));
 }
 
+/// Wires the kernel and the port together (the two import each other).
 pub fn linkPort(uos: *std.Build.Module, port: *std.Build.Module) void {
     uos.addImport("uos_port", port);
     port.addImport("uos", uos);
