@@ -61,6 +61,10 @@ const Test = struct {
     smp_only: bool = false,
     /// Only on this board: the test exists only as `test/<board>/<name>/`.
     only: ?BoardId = null,
+    /// C sources linked with the test (its main.zig enables `c_api` and
+    /// `c_runtime`), and their flags.
+    c_sources: []const []const u8 = &.{},
+    c_flags: []const []const u8 = &.{},
 };
 
 /// Tests ported one to one from a board's C++ test folder
@@ -101,7 +105,12 @@ const tests = [_]Test{
     .{ .name = "exc-test", .only = .pico2 },
     .{ .name = "fp-switch" },
     .{ .name = "mutex-stress" },
-    .{ .name = "rtos-apis" },
+    .{
+        .name = "rtos-apis",
+        .c_sources = &.{"test/rtos-apis/test-c-api.c"},
+        // From the suite's os-app-config.h, as main.zig's uos_options.
+        .c_flags = &.{ "-std=c11", "-DOS_INTEGER_RTOS_DEFAULT_STACK_SIZE_BYTES=2048", "-DOS_INTEGER_SYSTICK_FREQUENCY_HZ=1000" },
+    },
     .{ .name = "io-test" },
     .{ .name = "spi-pipeline", .only = .weactf411 },
     .{ .name = "smp-test-usb-cdc-acm", .only = .pico2 },
@@ -189,6 +198,13 @@ pub fn build(b: *std.Build) void {
         harness.addImport("uos", fw.exe.root_module.import_table.get("uos").?);
         harness.addImport("uos_board", fw.exe.root_module.import_table.get("uos_board").?);
         fw.exe.root_module.addImport("uos_suites", uos_build.createSuitesModule(b, kernel_dep, fw.exe.root_module.import_table.get("uos").?));
+
+        if (t.c_sources.len > 0) {
+            const root = fw.exe.root_module;
+            uos_build.addCIncludes(kernel_dep, root, true);
+            root.addIncludePath(b.path(b.fmt("test/{s}", .{t.name})));
+            root.addCSourceFiles(.{ .files = t.c_sources, .flags = t.c_flags });
+        }
 
         const elf = fw.get_emitted_elf();
         const install = b.addInstallFileWithDir(elf, .{ .custom = b.fmt("firmware/{s}", .{@tagName(board_id)}) }, b.fmt("{s}.elf", .{t.name}));

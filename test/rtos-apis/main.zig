@@ -4,7 +4,8 @@
 //! first one that fails stops the run. Of the C++ parts:
 //!
 //!   test_cpp_api       ported   (test-cpp-api.zig, the Zig RTOS API)
-//!   test_c_api         not yet  (the Zig kernel has no C API yet)
+//!   test_c_api         ported   (the original test-c-api.c, on the C API
+//!                               of the Zig kernel, c_api.zig)
 //!   test_iso_api       ported   (test-iso-api.zig, on std.Io / uos.Io)
 //!   test_posix_io_api  ported   (test-posix-io-api.zig, uos.io.devices)
 //!   test_chan_fatfs    excluded on these boards (OS_EXCLUDE_RTOS_APIS_FATFS)
@@ -43,7 +44,15 @@ pub const uos_options: uos.Options = .{
     .default_stack_size_bytes = 2048,
     .idle_stack_size_bytes = 2048,
     .dynamic_memory_size_bytes = 32 * 1024,
+    .statistics_context_switches = true,
+    .statistics_cpu_cycles = true,
+    // test-c-api.c: the C API and, on these freestanding boards, the
+    // minimal C runtime (printf, strcmp, assert).
+    .c_api = true,
+    .c_runtime = true,
 };
+
+extern fn test_c_api() c_int;
 
 comptime {
     t.exportStartup();
@@ -70,7 +79,10 @@ fn osMain() u8 {
         printf("ret={d}\n", .{ret});
     }
 
-    // test_c_api: not ported yet (the Zig kernel has no C API).
+    if (ret == 0) {
+        ret = test_c_api();
+        printf("ret={d}\n", .{ret});
+    }
 
     if (ret == 0) {
         ret = iso_api.run(io, false);
