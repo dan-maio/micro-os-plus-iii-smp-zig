@@ -80,8 +80,9 @@ pub const State = enum(u8) {
 
 pub const stack_magic: StackElement = if (@hasDecl(port, "stack_magic")) port.stack_magic else 0xEFBE_ADDE;
 
-/// The thread stack (`thread::stack`).
-pub const Stack = struct {
+/// The thread stack (`thread::stack`). Extern: the C API exposes it as
+/// `os_thread_stack_t`.
+pub const Stack = extern struct {
     bottom_address: ?[*]StackElement = null,
     size_bytes: usize = 0,
 

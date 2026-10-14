@@ -40,6 +40,10 @@ pub const io = struct {
 
 comptime {
     @import("port_contract.zig").validate(port);
+    // The C API and the C runtime export their symbols only when enabled
+    // in the options.
+    _ = @import("c_api.zig");
+    _ = @import("libc.zig");
 }
 
 test {

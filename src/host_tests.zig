@@ -7,6 +7,7 @@ test {
     _ = @import("memory/FirstFitTop.zig");
     _ = @import("memory/BlockPool.zig");
     _ = @import("rtos/lists.zig").List;
+    _ = @import("c_storage.zig");
 }
 
 test "lists" {

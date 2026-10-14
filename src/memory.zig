@@ -111,6 +111,13 @@ pub fn allocator() std.mem.Allocator {
     return system.get();
 }
 
+/// The system heap itself (the C API `os_memory_get_default()`); not thread
+/// safe, lock the scheduler around its use.
+pub fn systemHeap() *FirstFitTop {
+    _ = system.get();
+    return &system.heap;
+}
+
 /// Statistics of the system heap.
 pub fn statistics() FirstFitTop.Statistics {
     _ = system.get();

@@ -77,6 +77,15 @@ pub const Options = struct {
     /// Zero lets the port hand over the rest of RAM, if it can.
     dynamic_memory_size_bytes: usize = 16 * 1024,
 
+    /// Export the µOS++ C API (include/cmsis-plus/rtos/os-c-api.h,
+    /// implemented in c_api.zig), for C code linked with the kernel.
+    c_api: bool = false,
+
+    /// Export a minimal C runtime for freestanding C code (printf, puts,
+    /// string functions, assert; include/c/, implemented in libc.zig).
+    /// Not for hosted targets, which have their own libc.
+    c_runtime: bool = false,
+
     /// The `OS_TRACE_RTOS_*` switches.
     trace: Trace = .{},
 

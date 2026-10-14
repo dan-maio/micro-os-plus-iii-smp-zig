@@ -40,6 +40,15 @@ pub fn createSuitesModule(b: *std.Build, dep: *std.Build.Dependency, uos: *std.B
 }
 
 /// Wires the kernel and the port together (the two import each other).
+/// Let `mod` compile C sources against the kernel: the µOS++ C API headers
+/// (include/cmsis-plus/rtos/os-c-api.h, `Options.c_api`) and, for
+/// freestanding targets, the minimal C runtime headers (include/c/,
+/// `Options.c_runtime`).
+pub fn addCIncludes(dep: *std.Build.Dependency, mod: *std.Build.Module, freestanding: bool) void {
+    mod.addIncludePath(dep.path("include"));
+    if (freestanding) mod.addIncludePath(dep.path("include/c"));
+}
+
 pub fn linkPort(uos: *std.Build.Module, port: *std.Build.Module) void {
     uos.addImport("uos_port", port);
     port.addImport("uos", uos);
@@ -59,5 +68,9 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    test_step.dependOn(&b.addRunArtifact(unit_tests).step);
+    const run_tests = b.addRunArtifact(unit_tests);
+    // c_storage.zig reads the C API header at run time.
+    run_tests.setCwd(b.path("."));
+    run_tests.addFileInput(b.path("include/cmsis-plus/rtos/os-c-decls.h"));
+    test_step.dependOn(&run_tests.step);
 }
