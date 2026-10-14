@@ -24,9 +24,47 @@ pub const led = struct {
     }
 };
 
+/// The console: UART0, TX on GPIO0, RX on GPIO1, 115200 8N1.
+pub const uart = struct {
+    const instance = hal.uart.instance.num(0);
+    var ready = false;
+
+    pub fn init() void {
+        hal.gpio.num(0).set_function(.uart);
+        hal.gpio.num(1).set_function(.uart);
+        instance.apply(.{ .clock_config = hal.clock_config, .baud_rate = 115200 });
+        ready = true;
+    }
+
+    pub fn write(bytes: []const u8) void {
+        if (!ready) return;
+        for (bytes) |c| {
+            if (c == '\n') put('\r');
+            put(c);
+        }
+    }
+
+    fn put(c: u8) void {
+        while (!instance.is_writeable()) {}
+        instance.get_regs().UARTDR.write_raw(c);
+    }
+
+    pub fn getChar() ?u8 {
+        if (!ready) return null;
+        if (!instance.is_readable()) return null;
+        return instance.get_regs().UARTDR.read().DATA;
+    }
+};
+
 /// The clocks are set by the HAL before `main()`.
 pub fn init() void {
     led.init();
+    uart.init();
+}
+
+/// The trace goes to the UART console (the port mirrors it to semihosting).
+pub fn uartWrite(bytes: []const u8) void {
+    uart.write(bytes);
 }
 
 pub fn cpuFrequencyHz() u32 {

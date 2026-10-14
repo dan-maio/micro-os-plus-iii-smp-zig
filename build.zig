@@ -59,7 +59,34 @@ const Test = struct {
     name: []const u8,
     /// Only on multi-CPU boards.
     smp_only: bool = false,
+    /// Only on this board: the test exists only as `test/<board>/<name>/`.
+    only: ?BoardId = null,
 };
+
+/// Tests ported one to one from a board's C++ test folder
+/// (`test/<board>/<test>/main.zig`); they replace the generic one.
+const board_tests = [_]struct { board: BoardId, name: []const u8 }{
+    .{ .board = .pico2, .name = "smp-test0" },
+    .{ .board = .pico2, .name = "smp-test1" },
+    .{ .board = .pico2, .name = "smp-test2" },
+    .{ .board = .pico2, .name = "smp-test3" },
+    .{ .board = .pico2, .name = "smp-test4" },
+    .{ .board = .pico2, .name = "smp-test5" },
+    .{ .board = .pico2, .name = "smp-mat-test" },
+    .{ .board = .pico2, .name = "sc-test-ko" },
+    .{ .board = .pico2, .name = "smp-test-ko" },
+    .{ .board = .pico2, .name = "exc-test" },
+    .{ .board = .weactf411, .name = "spi-pipeline" },
+    .{ .board = .pico2, .name = "smp-test-usb-cdc-acm" },
+};
+
+fn testRoot(b: *std.Build, board: BoardId, name: []const u8) std.Build.LazyPath {
+    for (board_tests) |bt| {
+        if (bt.board == board and std.mem.eql(u8, bt.name, name))
+            return b.path(b.fmt("test/{s}/{s}/main.zig", .{ @tagName(board), name }));
+    }
+    return b.path(b.fmt("test/{s}/main.zig", .{name}));
+}
 
 const tests = [_]Test{
     .{ .name = "smp-test0" },
@@ -67,12 +94,17 @@ const tests = [_]Test{
     .{ .name = "smp-test2", .smp_only = true },
     .{ .name = "smp-test3", .smp_only = true },
     .{ .name = "smp-test4", .smp_only = true },
+    .{ .name = "smp-test5", .only = .pico2 },
     .{ .name = "smp-mat-test" },
     .{ .name = "sc-test-ko" },
+    .{ .name = "smp-test-ko", .only = .pico2 },
+    .{ .name = "exc-test", .only = .pico2 },
     .{ .name = "fp-switch" },
     .{ .name = "mutex-stress" },
     .{ .name = "rtos-apis" },
     .{ .name = "io-test" },
+    .{ .name = "spi-pipeline", .only = .weactf411 },
+    .{ .name = "smp-test-usb-cdc-acm", .only = .pico2 },
 };
 
 pub const FirmwareOptions = struct {
@@ -141,13 +173,14 @@ pub fn build(b: *std.Build) void {
     for (tests) |t| {
         if (only_test) |name| if (!std.mem.eql(u8, name, t.name)) continue;
         if (t.smp_only and board.ncpu < 2) continue;
+        if (t.only) |only| if (only != board_id) continue;
 
         const harness = b.createModule(.{ .root_source_file = b.path("test/harness.zig") });
 
         const fw = addFirmware(b, mb, kernel_dep, b.path("src/port.zig"), b.path(board.source), .{
             .name = t.name,
             .board = board_id,
-            .root_source_file = b.path(b.fmt("test/{s}/main.zig", .{t.name})),
+            .root_source_file = testRoot(b, board_id, t.name),
             .optimize = optimize,
             .imports = &.{.{ .name = "uos_test", .module = harness }},
         }, board.ncpu);

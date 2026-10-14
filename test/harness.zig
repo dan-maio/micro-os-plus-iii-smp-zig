@@ -23,6 +23,10 @@ pub const microzig_options = uos.port.microzig_options;
 pub const std_options: std.Options = .{
     .logFn = uos.trace.logFn,
     .log_level = .info,
+    // Freestanding has no pages; std.Io's (unused) memory maps still name
+    // the size.
+    .page_size_min = 4096,
+    .page_size_max = 4096,
 };
 
 pub fn exportStartup() void {
@@ -55,8 +59,33 @@ pub const panic = std.debug.FullPanic(struct {
     }
 }.panicFn);
 
+/// Run the test in the main thread, with an LED heartbeat (4 Hz) from a
+/// periodic timer while it runs.
 pub fn run(comptime app_main: anytype) noreturn {
-    uos.rtos.run(app_main);
+    const Wrapper = struct {
+        var heartbeat: uos.rtos.Timer = .init("heartbeat", blink, null, .periodic);
+
+        fn blink(_: ?*anyopaque) void {
+            board.led.toggle();
+        }
+
+        fn main() u8 {
+            heartbeat.start(125) catch {};
+            const ReturnType = @typeInfo(@TypeOf(app_main)).@"fn".return_type.?;
+            const code: u8 = switch (@typeInfo(ReturnType)) {
+                .void => blk: {
+                    app_main();
+                    break :blk 0;
+                },
+                .int => @intCast(app_main()),
+                else => @compileError("test main must return void or an integer"),
+            };
+            heartbeat.stop() catch {};
+            board.led.set(code != 0); // on: failed, off: passed
+            return code;
+        }
+    };
+    uos.rtos.run(Wrapper.main);
 }
 
 // ----------------------------------------------------------------------------

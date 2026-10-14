@@ -66,6 +66,8 @@ pub const usart1 = struct {
     const BRR: *volatile u32 = @ptrFromInt(0x4001_1008);
     const CR1: *volatile u32 = @ptrFromInt(0x4001_100C);
 
+    var ready = false;
+
     pub fn init(baud: u32) void {
         RCC_AHB1ENR.* |= 1 << 0; // GPIOA
         RCC_APB2ENR.* |= 1 << 4; // USART1
@@ -77,9 +79,11 @@ pub const usart1 = struct {
         CR1.* = 0;
         BRR.* = (cpu_frequency_hz + baud / 2) / baud; // APB2 = SYSCLK
         CR1.* = (1 << 3) | (1 << 2) | (1 << 13); // TE, RE, UE
+        ready = true;
     }
 
     pub fn write(bytes: []const u8) void {
+        if (!ready) return;
         for (bytes) |c| {
             if (c == '\n') put('\r');
             put(c);

@@ -30,6 +30,7 @@ pub const arch = @import("arch.zig");
 pub const semihosting = @import("semihosting.zig");
 const context = @import("context.zig");
 
+const root = @import("root");
 const config = uos.config;
 const ncpu = config.ncpu;
 const smp = config.smp;
@@ -43,6 +44,17 @@ comptime {
     if (smp and !is_rp) @compileError("uos_options.smp: the Cortex-M SMP port supports the RP2040 and the RP2350");
     if (ncpu > 2) @compileError("the RP2040/RP2350 have two cores");
 }
+
+/// Application options of the port, from `pub const uos_port_options` in
+/// the root file.
+pub const Options = struct {
+    /// Launch core 1 inside `scheduler.start()`. When false, the application
+    /// launches it from a thread with `launchCore1()`, as the C++ pico tests
+    /// do from `os_main()`.
+    launch_core1_at_start: bool = true,
+};
+
+pub const options: Options = if (@hasDecl(root, "uos_port_options")) root.uos_port_options else .{};
 
 /// BASEPRI critical sections (ARMv7-M/v8-M, single CPU, when configured).
 const basepri_level: ?u32 = if (config.options.critical_section_interrupt_priority) |prio|
@@ -351,12 +363,7 @@ pub const scheduler = struct {
         if (smp) {
             sio.fifoDrain();
             arch.nvicSetPriority(sio.fifoIrq(0), arch.lowest_priority_byte);
-            // Launch core 1 with the FIFO IRQ off: the bootrom handshake
-            // uses the very same FIFO.
-            microzig.hal.multicore.launch_core1_with_stack(secondaryStart, &core1_msp_stack);
-            sio.fifoDrain();
-            arch.nvicClearPending(sio.fifoIrq(0));
-            arch.nvicEnable(sio.fifoIrq(0));
+            if (options.launch_core1_at_start) launchCore1();
         }
 
         if (basepri_level != null) arch.setBasepri(0);
@@ -367,6 +374,17 @@ pub const scheduler = struct {
         while (true) arch.nop();
     }
 };
+
+/// Launch core 1 (bootrom FIFO handshake) and then open core 0's IPI
+/// channel. The FIFO IRQ of core 0 must stay off during the launch: the
+/// handshake words travel through the very same FIFO.
+pub fn launchCore1() void {
+    if (!smp) return;
+    microzig.hal.multicore.launch_core1_with_stack(secondaryStart, &core1_msp_stack);
+    sio.fifoDrain();
+    arch.nvicClearPending(sio.fifoIrq(0));
+    arch.nvicEnable(sio.fifoIrq(0));
+}
 
 /// Set PSP = MSP and select it, in one asm block so no stack slot is
 /// addressed in between.
@@ -446,6 +464,7 @@ export fn uos_port_switch_stacks(sp: [*]StackElement) callconv(.c) [*]StackEleme
 
     var out_sp: [*]StackElement = sp;
     if (new_thread != old_thread) out_sp = new_thread.context.port.stack_ptr.?;
+    if (std.debug.runtime_safety and (out_sp[8] & 0xFFFF_FF00) != 0xFFFF_FF00) badFrame(old_thread, new_thread, sp, out_sp);
     if (smp) {
         // Claim it: the context is now live in this CPU's registers; the
         // other CPU must not pick it.
@@ -453,6 +472,25 @@ export fn uos_port_switch_stacks(sp: [*]StackElement) callconv(.c) [*]StackEleme
         klockRelease();
     }
     return out_sp;
+}
+
+/// The incoming frame does not hold an EXC_RETURN: report and stop.
+fn badFrame(old: *uos.rtos.Thread, new: *uos.rtos.Thread, sp: [*]StackElement, out_sp: [*]StackElement) noreturn {
+    var buf: [128]u8 = undefined;
+    trace.write(std.fmt.bufPrint(&buf, "\n!! BAD FRAME cpu{d}: {s}@{x} sp={x} -> {s}@{x} sp={x} [8]={x} state={s}\n", .{
+        scheduler.cpuId(),
+        old.name,
+        @intFromPtr(old),
+        @intFromPtr(sp),
+        new.name,
+        @intFromPtr(new),
+        @intFromPtr(out_sp),
+        out_sp[8],
+        @tagName(new.state),
+    }) catch "");
+    const st = new.context.stack;
+    trace.write(std.fmt.bufPrint(&buf, "   new stack {x}..{x}\n", .{ @intFromPtr(st.bottom_address), @intFromPtr(st.bottom_address) + st.size_bytes }) catch "");
+    terminate(1);
 }
 
 fn klockRelease() void {
@@ -508,8 +546,16 @@ pub const clock_highres = struct {
 // Contract: trace and termination.
 
 pub const trace = struct {
+    /// Every trace byte goes to the console -- the application's own writer
+    /// when its root declares `uos_trace_write` (a test with its own UART
+    /// driver), otherwise the board's UART -- and to semihosting, when a
+    /// debugger is attached.
     pub fn write(bytes: []const u8) void {
-        if (@hasDecl(board, "traceWrite")) return board.traceWrite(bytes);
+        if (@hasDecl(root, "uos_trace_write")) {
+            root.uos_trace_write(bytes);
+        } else if (@hasDecl(board, "uartWrite")) {
+            board.uartWrite(bytes);
+        }
         semihosting.write(bytes);
     }
 };
@@ -517,7 +563,7 @@ pub const trace = struct {
 /// End the run with a verdict, through semihosting.
 pub fn terminate(code: u8) noreturn {
     arch.disableIrq();
-    semihosting.write(if (code == 0) "RESULT: PASS\n" else "RESULT: FAIL\n");
+    trace.write(if (code == 0) "RESULT: PASS\n" else "RESULT: FAIL\n");
     semihosting.exit(code);
 }
 
@@ -538,6 +584,59 @@ fn sioFifoHandler() callconv(.c) void {
     scheduler.reschedule();
 }
 
+/// The fault handlers: pass the stacked frame (MSP or PSP, by EXC_RETURN
+/// bit 2) to `faultReport()`.
+fn faultHandler() callconv(.naked) void {
+    if (arch.is_armv6m) {
+        asm volatile (
+            \\ mov r0, lr
+            \\ movs r1, #4
+            \\ tst r0, r1
+            \\ bne 1f
+            \\ mrs r0, msp
+            \\ b 2f
+            \\1:
+            \\ mrs r0, psp
+            \\2:
+            \\ mov r1, lr
+            \\ bl uos_port_fault_report
+        );
+    } else {
+        asm volatile (
+            \\ tst lr, #4
+            \\ ite eq
+            \\ mrseq r0, msp
+            \\ mrsne r0, psp
+            \\ mov r1, lr
+            \\ bl uos_port_fault_report
+        );
+    }
+}
+
+/// Dump the fault (frame, status registers, CPU, thread) and end the run.
+export fn uos_port_fault_report(frame: [*]const u32, exc_return: u32) callconv(.c) noreturn {
+    arch.disableIrq();
+    const ipsr = arch.getIpsr();
+    var buf: [96]u8 = undefined;
+    const lines = [_][]const u8{
+        std.fmt.bufPrint(&buf, "\n!! FAULT exception {d} on cpu{d}, EXC_RETURN 0x{X:0>8}\n", .{ ipsr, scheduler.cpuId(), exc_return }) catch "",
+    };
+    trace.write(lines[0]);
+    trace.write(std.fmt.bufPrint(&buf, "   pc 0x{X:0>8} lr 0x{X:0>8} xpsr 0x{X:0>8}\n", .{ frame[6], frame[5], frame[7] }) catch "");
+    trace.write(std.fmt.bufPrint(&buf, "   r0 0x{X:0>8} r1 0x{X:0>8} r2 0x{X:0>8} r3 0x{X:0>8} r12 0x{X:0>8}\n", .{ frame[0], frame[1], frame[2], frame[3], frame[4] }) catch "");
+    if (!arch.is_armv6m) {
+        const cfsr: *volatile u32 = @ptrFromInt(0xE000_ED28);
+        const hfsr: *volatile u32 = @ptrFromInt(0xE000_ED2C);
+        const mmfar: *volatile u32 = @ptrFromInt(0xE000_ED34);
+        const bfar: *volatile u32 = @ptrFromInt(0xE000_ED38);
+        trace.write(std.fmt.bufPrint(&buf, "   CFSR 0x{X:0>8} HFSR 0x{X:0>8} MMFAR 0x{X:0>8} BFAR 0x{X:0>8}\n", .{ cfsr.*, hfsr.*, mmfar.*, bfar.* }) catch "");
+    }
+    if (uos.rtos.scheduler.current_thread[scheduler.cpuId()]) |th| {
+        trace.write(std.fmt.bufPrint(&buf, "   thread {s} @0x{X}\n", .{ th.name, @intFromPtr(th) }) catch "");
+    }
+    terminate(1);
+}
+
 const pendSv = if (arch.is_armv6m) context.pendSvHandlerV6m else context.pendSvHandlerV7m;
 
 /// The MicroZig options the application root re-exports. The board may add
@@ -549,6 +648,12 @@ pub const microzig_options: microzig.Options = blk: {
     };
     o.interrupts.PendSV = .{ .naked = pendSv };
     o.interrupts.SysTick = .{ .c = sysTickHandler };
+    o.interrupts.HardFault = .{ .naked = faultHandler };
+    if (!arch.is_armv6m) {
+        o.interrupts.MemManageFault = .{ .naked = faultHandler };
+        o.interrupts.BusFault = .{ .naked = faultHandler };
+        o.interrupts.UsageFault = .{ .naked = faultHandler };
+    }
     if (smp) {
         if (is_rp2350) o.interrupts.SIO_IRQ_FIFO = .{ .c = sioFifoHandler };
         if (is_rp2040) {
@@ -556,9 +661,16 @@ pub const microzig_options: microzig.Options = blk: {
             o.interrupts.SIO_IRQ_PROC1 = .{ .c = sioFifoHandler };
         }
     }
+    // The board's handlers, then the application's (`uos_interrupts` in the
+    // root file), which may override them.
     if (@hasDecl(board, "interrupts")) {
         for (@typeInfo(@TypeOf(board.interrupts)).@"struct".field_names) |name| {
             @field(o.interrupts, name) = @field(board.interrupts, name);
+        }
+    }
+    if (@hasDecl(root, "uos_interrupts")) {
+        for (@typeInfo(@TypeOf(root.uos_interrupts)).@"struct".field_names) |name| {
+            @field(o.interrupts, name) = @field(root.uos_interrupts, name);
         }
     }
     break :blk o;
