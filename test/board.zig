@@ -76,7 +76,50 @@ pub const smp = struct {
     pub fn startSecondaryCores() void {
         uos.port.startSecondaryCpus();
     }
+
+    /// The stage a secondary must reach to count as joined.
+    pub const core_joined: u32 = 3;
+
+    /// The SMP test helpers of the C++ test/native/src/test-smp-boot.cpp.
+    /// (`smp_install_boot_threads()` has no counterpart: the Zig kernel
+    /// creates an idle thread for every CPU itself.)
+    pub fn secondariesJoined() bool {
+        var cpu: u32 = 1;
+        while (cpu < uos.config.ncpu) : (cpu += 1) {
+            if (coreStage(cpu) < core_joined) return false;
+        }
+        return true;
+    }
+
+    /// Wait (50 ms steps) until every secondary joined or `timeout_ms`
+    /// elapsed; returns the milliseconds waited.
+    pub fn waitSecondaries(timeout_ms: u32) u32 {
+        var waited: u32 = 0;
+        while (!secondariesJoined() and waited < timeout_ms) {
+            uos.rtos.sysclock.sleepFor(50) catch {};
+            waited += 50;
+        }
+        return waited;
+    }
+
+    var join_summary_buf: [uos.config.ncpu * 8 + 1]u8 = undefined;
+
+    /// "c1=3 c2=3 ...", the stage of every secondary.
+    pub fn joinSummary() []const u8 {
+        var w: std.Io.Writer = .fixed(&join_summary_buf);
+        var cpu: u32 = 1;
+        while (cpu < uos.config.ncpu) : (cpu += 1) {
+            w.print("{s}c{d}={d}", .{ if (cpu == 1) "" else " ", cpu, coreStage(cpu) }) catch break;
+        }
+        return w.buffered();
+    }
 };
+
+/// `cpu_slot()`: this CPU's index, clamped to the CPU count.
+pub fn cpuSlot() u32 {
+    const id = uos.port.scheduler.cpuId();
+    return if (id < uos.config.ncpu) id else 0;
+}
 
 /// The verdict: the process exit code.
 pub const hw_result = struct {
