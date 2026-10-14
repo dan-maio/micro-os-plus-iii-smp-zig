@@ -11,6 +11,21 @@ const std = @import("std");
 const builtin = @import("builtin");
 const uos = @import("uos");
 
+/// The kernel options of the board's tests: `ncpu` CPUs (the board has 4);
+/// the port's stack sizes (32 KiB minimum, 64 KiB default); main's
+/// 8192-element static stack; the board's 32 MiB free store.
+pub fn options(ncpu: u8) uos.Options {
+    return .{
+        .ncpu = ncpu,
+        .smp = ncpu > 1,
+        .main_stack_size_bytes = 8192 * @sizeOf(uos.port.StackElement),
+        .default_stack_size_bytes = 64 * 1024,
+        .idle_stack_size_bytes = 64 * 1024,
+        .min_stack_size_bytes = 32 * 1024,
+        .dynamic_memory_size_bytes = 0,
+    };
+}
+
 pub const banner_long = "POSIX synthetic host";
 pub const banner_short = "native";
 pub const banner_isa = switch (builtin.cpu.arch) {

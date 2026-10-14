@@ -19,15 +19,7 @@ const uart = board.uart;
 const led = board.led;
 const sysclock = rtos.sysclock;
 
-pub const uos_options: uos.Options = .{
-    .ncpu = 4,
-    .smp = true,
-    .main_stack_size_bytes = 8192 * @sizeOf(uos.port.StackElement),
-    .default_stack_size_bytes = 64 * 1024,
-    .idle_stack_size_bytes = 64 * 1024,
-    .min_stack_size_bytes = 32 * 1024,
-    .dynamic_memory_size_bytes = 0,
-};
+pub const uos_options = board.options(4);
 
 var g_ping: rtos.Semaphore = .binary("ping", 1); // starts signalled
 var g_pong: rtos.Semaphore = .binary("pong", 0);

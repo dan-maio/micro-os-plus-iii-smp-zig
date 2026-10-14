@@ -13,16 +13,7 @@ const uos = @import("uos");
 const board = @import("board");
 const uart = board.uart;
 
-pub const uos_options: uos.Options = .{
-    .ncpu = 4,
-    .smp = true,
-    .main_stack_size_bytes = 8192 * @sizeOf(uos.port.StackElement),
-    .default_stack_size_bytes = 64 * 1024,
-    .idle_stack_size_bytes = 64 * 1024,
-    .min_stack_size_bytes = 32 * 1024,
-    // The board's 32 MiB free store.
-    .dynamic_memory_size_bytes = 0,
-};
+pub const uos_options = board.options(4);
 
 pub fn main() void {
     uart.init();
