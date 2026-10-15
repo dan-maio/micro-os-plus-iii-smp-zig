@@ -31,7 +31,31 @@ const Test = struct {
     /// Also import the board's storage drivers (drivers/): `sd` (the host
     /// file card) and `flatfs`.
     devices: bool = false,
+    /// Also the Arm CMSIS-RTOS validator sources (-Dcmsis_rv).
+    cmsis_rv: bool = false,
 };
+
+/// The arm-cmsis-rtos-validator xPack files compiled into
+/// cmsis-os-validator, as its CMakeLists.txt lists them.
+const cmsis_rv_sources = [_][]const u8{
+    "cmsis-plus/src/main.c",
+    "Source/RV_Framework.c",
+    "Source/cmsis_rv.c",
+    "Source/RV_Signal.c",
+    "Source/RV_Report.c",
+    "Source/RV_Thread.c",
+    "Source/RV_MailQueue.c",
+    "Source/RV_Timer.c",
+    "Source/RV_GenWait.c",
+    "Source/RV_WaitFunc.c",
+    "Source/RV_MemoryPool.c",
+    "Source/RV_MsgQueue.c",
+    "Source/RV_Mutex.c",
+    "Source/RV_Semaphore.c",
+};
+// OS_INTEGER_SYSTICK_FREQUENCY_HZ: the default of the C++ port headers, and
+// the tests' uos_options.
+const cmsis_rv_flags = [_][]const u8{ "-std=c11", "-DTRACE", "-DOS_INTEGER_SYSTICK_FREQUENCY_HZ=1000", "-D_GNU_SOURCE", "-D_POSIX_C_SOURCE=200809L", "-D_XOPEN_SOURCE=700" };
 
 const tests = [_]Test{
     .{ .name = "smp-test0" },
@@ -47,6 +71,7 @@ const tests = [_]Test{
     .{ .name = "flatfs-test", .devices = true },
     .{ .name = "smp-num-test", .devices = true },
     .{ .name = "smp-pipeline-test", .devices = true },
+    .{ .name = "cmsis-os-validator", .cmsis_rv = true },
     .{ .name = "trace-stdout", .c_sources = &.{"test/trace-stdout/trace-c.c"}, .c_flags = &.{ "-std=c11", "-DTRACE" } },
     .{ .name = "trace-stderr", .c_sources = &.{"test/trace-stderr/trace-c.c"}, .c_flags = &.{ "-std=c11", "-DTRACE" } },
     .{
@@ -68,6 +93,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.option(std.lang.Optimize, "optimize", "Optimisation mode (default safe)") orelse .safe;
     const only_test = b.option([]const u8, "test", "Build (and run) only this test");
+    const cmsis_rv: ?[]const u8 = b.option([]const u8, "cmsis_rv", "The arm-cmsis-rtos-validator xPack folder (default: the one in ~/.local/xPacks)") orelse
+        if (b.graph.environ_map.get("HOME")) |home| b.fmt("{s}/.local/xPacks/@xpacks/arm-cmsis-rtos-validator/1.0.0-4", .{home}) else null;
 
     const kernel_dep = b.dependency("micro_os_plus_iii", .{});
 
@@ -83,6 +110,7 @@ pub fn build(b: *std.Build) void {
 
     for (tests) |t| {
         if (only_test) |name| if (!std.mem.eql(u8, name, t.name)) continue;
+        if (t.cmsis_rv and cmsis_rv == null) continue;
 
         const exe = addApplication(b, kernel_dep, host_c_mod, .{
             .name = t.name,
@@ -96,6 +124,16 @@ pub fn build(b: *std.Build) void {
             root.addIncludePath(b.path("include"));
             root.addIncludePath(b.path(t.c_include orelse b.fmt("test/{s}", .{t.name})));
             root.addCSourceFiles(.{ .files = t.c_sources, .flags = t.c_flags });
+        }
+        if (t.cmsis_rv) {
+            const root = exe.root_module;
+            const rv: std.Build.LazyPath = .{ .cwd_relative = cmsis_rv.? };
+            uos_build.addCIncludes(kernel_dep, root, false);
+            root.addIncludePath(b.path("include"));
+            root.addIncludePath(rv.path(b, "Include"));
+            root.addIncludePath(rv.path(b, "cmsis-plus/include"));
+            root.addIncludePath(kernel_dep.path("include/cmsis-plus/legacy"));
+            root.addCSourceFiles(.{ .root = rv, .files = &cmsis_rv_sources, .flags = &cmsis_rv_flags });
         }
         if (t.rtos_apis_parts) {
             const parts = b.createModule(.{ .root_source_file = b.path("test/rtos-apis/parts.zig") });
