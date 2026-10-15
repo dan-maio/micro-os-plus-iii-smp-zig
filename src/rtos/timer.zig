@@ -65,11 +65,9 @@ pub const Timer = struct {
     }
 
     pub fn deinit(tm: *Timer) void {
-        {
-            const cs = interrupts.CriticalSection.enter();
-            defer cs.exit();
-            if (tm.state == .running) tm.node.links.unlink();
-        }
+        const cs = interrupts.CriticalSection.enter();
+        defer cs.exit();
+        if (tm.state == .running) tm.node.links.unlink();
         tm.state = .destroyed;
     }
 
@@ -94,12 +92,12 @@ pub const Timer = struct {
     pub fn stop(tm: *Timer) Error!void {
         if (tr.timer) trace.print("Timer.stop() @{*} {s}\n", .{ tm, tm.name });
         if (interrupts.inHandlerMode()) return error.NotPermitted;
+        // The state is checked and changed under the same lock as the
+        // callback's re-arm (see action()).
+        const cs = interrupts.CriticalSection.enter();
+        defer cs.exit();
         if (tm.state != .running) return error.Again;
-        {
-            const cs = interrupts.CriticalSection.enter();
-            defer cs.exit();
-            tm.node.links.unlink();
-        }
+        tm.node.links.unlink();
         tm.state = .stopped;
     }
 
@@ -108,20 +106,32 @@ pub const Timer = struct {
     }
 
     /// The clock list action: re-arm when periodic, then call back.
+    ///
+    /// The list check unlinks the node and calls this outside its lock, so
+    /// on SMP another CPU may stop (and destroy) the timer meanwhile. The
+    /// state is therefore checked, and the timer re-armed, under the lock
+    /// stop() and deinit() take, and the callback and its argument are read
+    /// there too: a stopped timer is never re-armed and its memory is not
+    /// touched after the lock. (The C++ timer::internal_callback() re-links
+    /// without the check.)
     fn action(node: *lists.TimestampNode) void {
         const tm: *Timer = @alignCast(@fieldParentPtr("node", node));
-        node.links.unlink();
-        if (tm.type == .periodic) {
-            tm.node.timestamp += tm.period;
-            const now = tm.clock.steadyNow();
-            if (tm.node.timestamp <= now) tm.node.timestamp = now + tm.period;
+        const func, const args = blk: {
             const cs = interrupts.CriticalSection.enter();
             defer cs.exit();
-            tm.clock.steady_list.link(&tm.node);
-        } else {
-            tm.state = .completed;
-        }
-        if (tr.timer) trace.puts(tm.name);
-        tm.func(tm.func_args);
+            node.links.unlink();
+            if (tm.state != .running) return; // stopped meanwhile
+            if (tm.type == .periodic) {
+                tm.node.timestamp += tm.period;
+                const now = tm.clock.steadyNow();
+                if (tm.node.timestamp <= now) tm.node.timestamp = now + tm.period;
+                tm.clock.steady_list.link(&tm.node);
+            } else {
+                tm.state = .completed;
+            }
+            if (tr.timer) trace.puts(tm.name);
+            break :blk .{ tm.func, tm.func_args };
+        };
+        func(args);
     }
 };
