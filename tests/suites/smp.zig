@@ -373,9 +373,10 @@ pub fn matrixSolve(comptime n: usize) void {
         max_diff,
     });
     t.ok(max_diff < 1e-3, @src());
-    // On physical SMP hardware parallel execution is faster; in single-threaded
-    // QEMU TCG emulation, vCPUs run sequentially so speedup cannot be guaranteed.
-    if (smp and n >= 64 and parallel_us < serial_us) t.ok(true, @src());
+    // On SMP hardware the parallel solve must be faster. (Under an emulator
+    // that runs its CPUs one after the other, e.g. QEMU TCG, it may not be:
+    // this check is for the boards.)
+    if (smp and n >= 64) t.ok(parallel_us < serial_us, @src());
 }
 
 // ----------------------------------------------------------------------------
