@@ -45,6 +45,7 @@ const tests = [_]Test{
     .{ .name = "smp-pro-cons-test" },
     .{ .name = "smp-mat-test" },
     .{ .name = "flatfs-test", .devices = true },
+    .{ .name = "smp-num-test", .devices = true },
     .{
         .name = "smp-rtos-apis",
         .c_sources = &.{"test/rtos-apis/test-c-api.c"},
