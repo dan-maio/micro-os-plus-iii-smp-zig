@@ -43,7 +43,10 @@ The RP2350 keeps peripheral state (USB, SIO) across a debugger reset:
 power cycle or reset the Pico 2 between tests, or a test may fail at start
 (seen with `smp-test-usb-cdc-acm`). The WCH-Link can drop the connection
 under heavy semihosting traffic ("CMSIS-DAP command mismatch", the log cut
-short); reset and run again.
+short); reset and run again. It also bridges the UART, and drops what it has
+not forwarded when OpenOCD disconnects at the end of a run: `terminate()`
+drains the UART and waits about 1 s before the semihosting `SYS_EXIT`, so
+the terminal gets the whole end.
 
 ## Tests
 
@@ -97,7 +100,9 @@ handler and default options.
 ## Documentation
 
 `docs/port-architecture-and-internals.md` describes the architecture, the
-SMP design, the context switch and the tests;
+SMP design, how Zig expresses the C++ object model, the context switch and
+the tests; `docs/posix-port-architecture-and-internals.md` the sibling POSIX
+port (`../micro-os-plus-iii-posix-arch`);
 `docs/weact-studio-blackpill-architecture-and-internals.md` the F411 board;
 `docs/aarch32-aarch64-smp-amp-porting-guide.md` how to port further.
 

@@ -140,9 +140,339 @@ The Zig compiler forces the developer to handle or explicitly propagate every po
 
 ---
 
-## 3. Build System Architecture: `build.zig`, `build.zig.zon`, and Fingerprints
+## 3. How Zig Expresses the C++ Object Model: Classes, Inheritance, Polymorphism
 
-### 3.1 What is `build.zig`?
+µOS++ IIIe is written in idiomatic C++: classes with constructors and destructors, base classes, virtual functions, templates. Zig has none of these as language features: no classes, no inheritance, no `virtual`, no constructors, no exceptions. It has `struct`s with functions, `comptime`, function pointers, tagged unions and `@fieldParentPtr`. This chapter shows, with code from this port, how each C++ mechanism maps to Zig, and why the mapping chosen is the idiomatic one rather than an imitation of C++.
+
+### 3.1 Classes, Constructors and Destructors → Structs, `init()` and `deinit()`
+
+A C++ class becomes a `struct` whose functions take the object as their first parameter; `t.f()` is only syntax for `T.f(t)`. There are no constructors: a struct is either a literal (default field values) or set up by an `init()` function; there are no destructors: the owner calls `deinit()`, usually with `defer`.
+
+C++ (`os-mutex.h`):
+
+```cpp
+class mutex : public internal::object_named_system
+{
+public:
+  mutex (const char* name, const attributes& attr = initializer_normal);
+  ~mutex ();
+  result_t lock (void);
+  result_t unlock (void);
+  ...
+};
+
+void f (void)
+{
+  mutex mx { "mx" };   // constructor
+  mx.lock ();
+  ...
+}                      // destructor
+```
+
+Zig (`src/rtos/mutex.zig`):
+
+```zig
+pub const Mutex = struct {
+    name: [:0]const u8 = "-",
+    owner: ?*Thread = null,
+    count: u16 = 0,
+    // ... all fields have defaults: `.{}` is a valid, unlocked mutex
+
+    /// Initialise in place, validating the attributes.
+    pub fn init(mx: *Mutex, name: [:0]const u8, attr: Attributes) Error!void { ... }
+    pub fn deinit(mx: *Mutex) void { ... }
+    pub fn lock(mx: *Mutex) Error!void { ... }
+    pub fn unlock(mx: *Mutex) Error!void { ... }
+};
+
+fn f() !void {
+    var mx: Mutex = .{ .name = "mx" };   // a literal: no code runs
+    defer mx.deinit();                   // the "destructor", explicit
+    try mx.lock();
+}
+```
+
+Because every field has a default, most kernel objects are plain static literals (`var g_mutex: rtos.Mutex = .{ .name = "cnt" };`) and need no constructor at all; the C++ "static constructor order" problem does not exist. Objects that must validate their arguments or allocate use `init()` returning an error union, which a C++ constructor cannot do (µOS++ C++ asserts instead).
+
+`init()` works **in place** (`fn init(self: *T, ...)`) whenever the object will be linked into kernel lists: those lists point at the object, so it must not be built in a temporary and copied (see 2.3).
+
+### 3.2 Inheritance of Data → Embedding (Composition)
+
+C++ derives to reuse a base's members:
+
+```cpp
+template <std::size_t N>
+class thread_inclusive : public thread
+{
+  stack::allocation_element_t stack_[N / sizeof (...)];
+};
+```
+
+Zig embeds the "base" as a field, and the "derived" type forwards to it (`src/rtos/thread.zig`):
+
+```zig
+/// A thread with its stack embedded (`thread_inclusive<N>`).
+pub fn ThreadInclusive(comptime stack_size_bytes: usize) type {
+    return struct {
+        thread: Thread,                       // the "base"
+        stack: [stack_size_bytes / @sizeOf(StackElement)]StackElement align(8),
+
+        const Self = @This();
+
+        pub fn init(self: *Self, name: [:0]const u8, function: Func, args: ?*anyopaque, attr: Attributes) Error!void {
+            var a = attr;
+            a.stack = &self.stack;
+            return self.thread.init(name, function, args, a, null);
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.thread.deinit();
+        }
+    };
+}
+```
+
+Where C++ would convert a `thread_inclusive<N>*` to a `thread*` implicitly, Zig writes `&ti.thread`: the up-cast is explicit, and costs nothing.
+
+### 3.3 The Down-Cast → `@fieldParentPtr`
+
+The kernel's intrusive lists hold nodes embedded in larger objects. C++ gets from a node back to its object with `static_cast` to a derived class (or `offsetof` arithmetic in the lists' templates). Zig has a builtin for exactly that: given a pointer to a field, return the struct containing it (`src/rtos/lists.zig`):
+
+```zig
+pub const WaitingThreadNode = struct {
+    links: Links = .{},
+    thread: *Thread,
+
+    pub fn fromLinks(links: *Links) *WaitingThreadNode {
+        return @alignCast(@fieldParentPtr("links", links));
+    }
+};
+```
+
+The same builtin gets a mutex from the links it has in its owner's list (`@fieldParentPtr("owner_links", links)`), a timer from its clock node, a thread from its `child_links`. The name of the field is checked at compile time, so the "cast" cannot name a member that does not exist, as a C++ `reinterpret_cast` could.
+
+### 3.4 Run-Time Polymorphism, Open Set → An Interface: Pointer + VTable
+
+C++ declares a base class with pure virtual functions; each device overrides them; callers hold a base pointer:
+
+```cpp
+class char_device : public device
+{
+protected:
+  virtual ssize_t do_read (void* buf, std::size_t nbyte) = 0;
+  virtual ssize_t do_write (const void* buf, std::size_t nbyte) = 0;
+};
+
+class my_uart : public char_device { ... ssize_t do_read (...) override; ... };
+```
+
+Zig makes the virtual table explicit: an interface is a type-erased pointer plus a pointer to a table of functions, the same shape as the standard library's `std.mem.Allocator` and `std.Io` (`src/io/devices.zig`):
+
+```zig
+pub const CharDevice = struct {
+    ptr: *anyopaque,          // `this`
+    vtable: *const VTable,    // the virtual table
+
+    pub const VTable = struct {
+        read: *const fn (ptr: *anyopaque, buf: []u8) Error!usize,
+        write: *const fn (ptr: *anyopaque, bytes: []const u8) Error!usize,
+        open: ?*const fn (ptr: *anyopaque) Error!void = null,       // optional: "not overridden"
+        close: ?*const fn (ptr: *anyopaque) void = null,
+        ioctl: ?*const fn (ptr: *anyopaque, request: u32, arg: usize) Error!usize = null,
+    };
+
+    pub fn read(d: CharDevice, buf: []u8) Error!usize {
+        return d.vtable.read(d.ptr, buf);           // the virtual call
+    }
+
+    /// Non-virtual helpers live in the interface, like base class methods.
+    pub fn writeAll(d: CharDevice, bytes: []const u8) Error!void {
+        var rest = bytes;
+        while (rest.len > 0) rest = rest[try d.write(rest)..];
+    }
+};
+```
+
+An implementation is any struct that can hand out such a pair; it does not "inherit" anything:
+
+```zig
+/// The trace channel as a write-only tty.
+pub const TraceTty = struct {
+    pub fn device(self: *TraceTty, name: []const u8) Device {
+        return .{ .name = name, .kind = .{ .char = .{ .ptr = self, .vtable = &.{
+            .read = read,
+            .write = write,
+        } } } };
+    }
+
+    fn read(_: *anyopaque, _: []u8) Error!usize {
+        return 0;
+    }
+
+    fn write(_: *anyopaque, bytes: []const u8) Error!usize {
+        trace.write(bytes);
+        return bytes.len;
+    }
+};
+```
+
+The vtable is a compile-time constant (`&.{ ... }`), placed in read-only memory, exactly what a C++ compiler emits for a class; the difference is only that it is visible. Optional entries (`?*const fn`) replace "a virtual function with a default implementation": the caller checks for `null` (`ioctl` returns `error.Unsupported`).
+
+**Decorators** fall out naturally, because an implementation may itself hold an interface. The C++ `block_device_lockable<T, L>` template becomes (`src/io/devices.zig`):
+
+```zig
+/// A block device behind a mutex: every operation of `inner` locked.
+pub const LockedBlockDevice = struct {
+    inner: BlockDevice,     // any block device: a RAM disk, a partition, an SD card
+    mutex: *Mutex,
+
+    pub fn device(self: *LockedBlockDevice, name: []const u8) Device {
+        return .{ .name = name, .kind = .{ .block = .{ .ptr = self, .vtable = &.{
+            .read_blocks = readBlocks,
+            .write_blocks = writeBlocks,
+            .block_size = blockSize,
+            .num_blocks = numBlocks,
+            .sync = sync,
+        } } } };
+    }
+    ...
+};
+```
+
+so `Partition` over `RamDisk`, wrapped in `LockedBlockDevice`, is three interface values chained at run time, as in the C++ test `test-posix-io-api.cpp`.
+
+The memory resources follow the same pattern: where C++ has `rtos::memory::memory_resource` with virtual `do_allocate()`, the kernel's heaps hand out a `std.mem.Allocator` (`ptr` + `vtable`), and the thread-safe heap is a decorator over the raw one (`memory.Locked`, the C++ `lockable`).
+
+### 3.5 Run-Time Polymorphism, Closed Set → Tagged Unions
+
+When all the variants are known, a virtual call is replaced by a `switch` on a tagged union, which the compiler checks for exhaustiveness. A device is either a char or a block device:
+
+```zig
+pub const Device = struct {
+    name: []const u8,
+    kind: union(enum) {
+        char: CharDevice,
+        block: BlockDevice,
+    },
+
+    /// The C++ dynamic_cast<char_device*>, without RTTI.
+    pub fn asChar(d: Device) ?CharDevice {
+        return switch (d.kind) {
+            .char => |c| c,
+            else => null,
+        };
+    }
+};
+```
+
+The three C++ clocks (`clock_systick`, `clock_highres`, `clock_rtc`, deriving from `clock` and overriding `now()`) are one struct with a kind (`src/rtos/clocks.zig`): the data they share is the struct, the behaviour that differs is a `switch`:
+
+```zig
+pub const Clock = struct {
+    name: [:0]const u8,
+    kind: Kind,
+    steady_count: Timestamp = 0,
+    offset: Offset = 0,
+    ...
+    pub const Kind = enum { systick, highres, rtc };
+
+    pub fn now(c: *Clock) Timestamp {
+        switch (c.kind) {
+            .systick => ...,
+            .highres => ...,   // + the hardware counter of the port
+            .rtc => ...,       // + the adjustable offset
+        }
+    }
+};
+```
+
+The C API's thread trampoline uses the same tool to run two kinds of C thread functions, the µOS++ ones and the CMSIS-RTOS v1 ones, from one trampoline (`src/c_api.zig`):
+
+```zig
+pub const ThreadFunc = union(enum) { c: CThreadFunc, v1: V1ThreadFunc };
+
+fn threadTrampoline(args: ?*anyopaque) ?*anyopaque {
+    const th: *Thread = @ptrCast(@alignCast(args.?));
+    const tail = ThreadTail.of(th);
+    switch (tail.func) {
+        .c => |f| return f(tail.args),
+        .v1 => |f| {
+            f(tail.args);
+            return null;
+        },
+    }
+}
+```
+
+### 3.6 Compile-Time Polymorphism: Templates → `comptime` Type Functions
+
+A C++ class template is a Zig function that takes types (or values) at compile time and returns a type. `message_queue_typed<T>` is (`src/rtos/mqueue.zig`):
+
+```zig
+pub fn MessageQueueTyped(comptime T: type) type {
+    return struct {
+        queue: MessageQueue = .{},           // the untyped queue, embedded
+
+        const Self = @This();
+
+        pub fn send(self: *Self, value: T, prio: Priority) Error!void {
+            return self.queue.send(std.mem.asBytes(&value), prio);
+        }
+        ...
+    };
+}
+
+var q: rtos.MessageQueueTyped(u32) = .{};
+```
+
+There is no separate template language: the body is ordinary Zig run by the compiler. The same mechanism builds `ThreadInclusive(N)`, `MemoryPoolTyped(T)` and `FileDescriptors(N)`.
+
+### 3.7 Concepts and Duck Typing → `anytype`, `@hasDecl` and Compile-Time Contracts
+
+C++ ports are bound to the kernel by fixed header paths (`port/os-decls.h`, `port/os-inlines.h`): a missing function is a link error deep inside the scheduler. The Zig kernel imports the port as a module (`uos_port`) and checks it like a C++20 concept (`src/port_contract.zig`):
+
+```zig
+pub fn validate(comptime Port: type) void {
+    comptime {
+        const required_decls = .{ "StackElement", "stack_alignment", "Context", "contextCreate",
+            "interrupts", "scheduler", "clock_systick", "clock_highres", "trace" };
+        for (required_decls) |name| {
+            if (!@hasDecl(Port, name))
+                @compileError("uos_port must declare `" ++ name ++ "` (see port_contract.zig)");
+        }
+        ...
+    }
+}
+```
+
+Optional features are probed the same way, with no `#ifdef`: `if (@hasDecl(port, "interruptStack")) ...`, `if (@hasDecl(port, "c_storage_words")) ...`; the application's options and overrides are found in the root file (`@hasDecl(root, "uos_options")`, `uos_interrupts`, `uos_trace_write`). A port is therefore a value of an implicit interface checked at compile time, with no run-time cost, which is what C++ templates over a policy class give, with readable error messages.
+
+### 3.8 Exceptions and `result_t` → Error Unions
+
+Covered in 2.4: a C++ function that returns `result_t` (and may throw) returns `Error!T` in Zig; `try` propagates, `catch` handles, and the error set is part of the type. The C API converts back to POSIX numbers at its boundary (`rtos.errno(err)`).
+
+### 3.9 Summary
+
+| C++ | Zig, in this port |
+| --- | --- |
+| class, member functions | `struct` with functions taking `self` |
+| constructor / destructor | field defaults, `init()` (may fail), `deinit()` with `defer` |
+| base class (data reuse) | an embedded field: `thread: Thread` |
+| up-cast | `&derived.base` |
+| down-cast, `container_of` | `@fieldParentPtr("field", ptr)` |
+| abstract base, virtual functions | interface struct: `ptr: *anyopaque` + `vtable: *const VTable` |
+| default virtual implementation | optional vtable entry (`?*const fn`) |
+| decorator / wrapper template | a struct holding an interface and exposing one |
+| closed hierarchy, `dynamic_cast` | `union(enum)` + `switch` |
+| class template | `fn (comptime T: type) type` |
+| concept / policy class | `anytype`, `@hasDecl`, a `comptime` contract check |
+| exceptions, `result_t` | error unions, `try`/`catch` |
+
+---
+
+## 4. Build System Architecture: `build.zig`, `build.zig.zon`, and Fingerprints
+
+### 4.1 What is `build.zig`?
 Unlike traditional embedded projects that rely on complex combinations of Makefiles, CMake, OpenOCD scripts, and Kconfig, Zig unifies the entire build system in `build.zig`.
 
 `build.zig` is not a declarative configuration file; it is an imperative Zig program that builds a Directed Acyclic Graph (DAG) of build steps executed by `zig build`.
@@ -184,7 +514,7 @@ Key features of this architecture:
 
 ---
 
-### 3.2 What is `build.zig.zon`?
+### 4.2 What is `build.zig.zon`?
 `build.zig.zon` is written in **ZON** (Zig Object Notation), a human-readable, minimal data format with syntax identical to anonymous Zig struct literals. It serves as the official package manifest for the Zig Package Manager.
 
 Here is the manifest for `micro-os-plus-iii-cortexm/build.zig.zon`:
@@ -214,7 +544,7 @@ Here is the manifest for `micro-os-plus-iii-cortexm/build.zig.zon`:
 
 ---
 
-### 3.3 Demystifying `.fingerprint = 0x95cd49afa981e1b1`
+### 4.3 Demystifying `.fingerprint = 0x95cd49afa981e1b1`
 
 #### What is the Fingerprint?
 Starting in modern Zig, package manifests include a 64-bit hexadecimal fingerprint (e.g. `0x95cd49afa981e1b1`).
@@ -260,9 +590,9 @@ For external dependencies downloaded from a URL or Git repository, the command `
 
 ---
 
-## 4. Symmetric Multi-Processing (SMP) Architecture & Resolution
+## 5. Symmetric Multi-Processing (SMP) Architecture & Resolution
 
-### 4.1 Dual Cortex-M33 on Raspberry Pi Pico 2 (RP2350)
+### 5.1 Dual Cortex-M33 on Raspberry Pi Pico 2 (RP2350)
 The RP2350 microcontroller contains two identical ARM Cortex-M33 cores (Core 0 and Core 1). In µOS++ IIIe SMP mode:
 - Both cores share a single linear address space (SRAM and XIP Flash).
 - Both cores execute the same scheduler instance.
@@ -300,7 +630,7 @@ The RP2350 microcontroller contains two identical ARM Cortex-M33 cores (Core 0 a
 
 ---
 
-### 4.2 Hardware Spinlocks, Atomic Primitives & The 3-Tier Lock Hierarchy
+### 5.2 Hardware Spinlocks, Atomic Primitives & The 3-Tier Lock Hierarchy
 On a single-core Cortex-M processor, critical sections are implemented simply by disabling interrupts (`cpsid i` or masking via `BASEPRI`). On a dual-core SMP processor (such as the RP2350 with dual Cortex-M33 cores), disabling interrupts on Core 0 does **not** stop Core 1 from executing instructions and modifying shared kernel queues.
 
 To guarantee determinism and prevent cross-core data corruption, the port implements a hardware-backed, multi-tiered synchronization architecture.
@@ -321,13 +651,13 @@ To guarantee determinism and prevent cross-core data corruption, the port implem
   └─────────────────────────────────┘         └─────────────────────────────────┘
 ```
 
-#### 4.2.1 SIO Hardware Spinlock Architecture on RP2350
+#### 5.2.1 SIO Hardware Spinlock Architecture on RP2350
 The RP2350 Single-Cycle IO (SIO) block provides 32 hardware 32-bit spinlock registers mapped from `0xD0000100` (`SPINLOCK0`) to `0xD000017C` (`SPINLOCK31`):
 - **Atomic Test-and-Set on Read**: A 32-bit bus read from `SPINLOCK0` performs an atomic test-and-set in silicon. If the lock was free (`0`), reading it returns non-zero (`1`) and simultaneously sets the lock to `1` in a single clock cycle. If the lock was already held, reading it returns `0`.
 - **Atomic Clear on Write**: Writing any 32-bit value to `SPINLOCK0` clears the lock bit back to `0`, making it immediately available to the other core.
 - **Kernel Reservation**: Hardware spinlock 0 is strictly reserved for the µOS++ SMP kernel lock. Spinlocks 1 through 31 are available for board drivers or application-level synchronization.
 
-#### 4.2.2 The Recursive `KernelLock` & Memory Barriers (`dmb` / `dsb`)
+#### 5.2.2 The Recursive `KernelLock` & Memory Barriers (`dmb` / `dsb`)
 Because kernel functions (such as thread state changes, timer evaluations, and priority recalculations) may call nested functions that also enter critical sections, the raw hardware spinlock is wrapped in a recursive SMP lock:
 
 ```zig
@@ -359,7 +689,7 @@ The Cortex-M33 features an in-order, dual-issue superscalar pipeline with write 
 2. `arch.dmb()` before release guarantees that all updates to thread control blocks, ready queues, and sleep lists have retired to memory *before* the spinlock clear is written to the SIO bus.
 3. `arch.dsb()` (Data Synchronization Barrier) after release ensures the store to `SPINLOCK0` is completed on the interconnect before the CPU continues, preventing a subsequent lock attempt on the same core from observing a stale busy flag.
 
-#### 4.2.3 The Strict 3-Tier Lock Hierarchy & Deadlock Prevention Proof
+#### 5.2.3 The Strict 3-Tier Lock Hierarchy & Deadlock Prevention Proof
 To eliminate the risk of deadlocks, the port enforces a strict, unidirectional 3-tier lock acquisition hierarchy:
 
 ```
@@ -388,7 +718,7 @@ Suppose Tier 1 was omitted, and a thread on Core 0 acquired Tier 2 (`SPINLOCK0`)
 
 **Enforcement Rule**: Tier 1 (`arch.disableIrq()` / `cpsid i`) is *always* asserted on the local core *before* querying or spinning on Tier 2 (`SPINLOCK0`).
 
-#### 4.2.4 Critical Concurrency Nuance in `setLocked()`
+#### 5.2.4 Critical Concurrency Nuance in `setLocked()`
 The scheduler provides `setLocked(state: bool) bool` to permit cooperative non-preemptive regions. During SMP execution, this function handles two subtle race conditions:
 
 ```zig
@@ -422,7 +752,7 @@ pub fn setLocked(state: bool) bool {
 1. **Race 1 (Core Migration Race)**: If `cpuId()` were evaluated before disabling interrupts, a PendSV exception could preempt the thread immediately after reading `cpu = 0`. The scheduler could migrate the thread to Core 1. When execution resumes, the thread would mark `lock_state[0] = true` while actually executing on Core 1! Subsequent unlock calls would then fail to clear the lock on Core 1, permanently wedging the scheduler.
 2. **Race 2 (Stale Lock Flag Window)**: When releasing the lock, `lock_state[cpu] = false` is published *before* `putLock()` restores `PRIMASK`. If `putLock()` restored interrupts first, an incoming IRQ between `putLock()` and `lock_state[cpu] = false` would observe `lock_state[cpu] == true`, conclude that the core is in a non-preemptive section, and suppress a needed `reschedule()`.
 
-#### 4.2.5 Cross-Core Context Claiming Protocol (`stack_ptr = null`)
+#### 5.2.5 Cross-Core Context Claiming Protocol (`stack_ptr = null`)
 A classic hazard in SMP real-time operating systems is **dual-core double-scheduling**: if a ready thread with affinity `0b11` (any core) is eligible to run, both Core 0 and Core 1 could concurrently select it, leading to simultaneous stack corruption.
 
 µOS++ IIIe solves this through atomic stack pointer ownership in `internalSwitchThreads()`:
@@ -440,7 +770,7 @@ A classic hazard in SMP real-time operating systems is **dual-core double-schedu
 
 ---
 
-### 4.3 SMP Ready Queue, CPU Affinity, and IPI
+### 5.3 SMP Ready Queue, CPU Affinity, and IPI
 The SMP scheduler manages a single, prioritized ready queue (`scheduler.ready_threads_list`).
 - Each thread has a `cpu_affinity: u32` bitmask:
   - `0b01`: Thread may only execute on Core 0.
@@ -453,7 +783,7 @@ The SMP scheduler manages a single, prioritized ready queue (`scheduler.ready_th
 
 ---
 
-### 4.4 The Mutex Lost-Wakeup Bug & Its Resolution
+### 5.4 The Mutex Lost-Wakeup Bug & Its Resolution
 
 #### The Concurrency Problem
 During high-contention mutex testing (`mutex-stress` with 10 threads running for 30 seconds), the test executed 2,411 iterations flawlessly, but hung during teardown when the main thread called `join()` on the worker threads.
@@ -496,16 +826,16 @@ If the next thread is also interrupted, it repeats the same cascade. Wakeup toke
 
 ---
 
-## 5. Kernel Synchronization Objects Architecture
+## 6. Kernel Synchronization Objects Architecture
 
-### 5.1 Mutexes & The Priority Inheritance Protocol (PIP)
+### 6.1 Mutexes & The Priority Inheritance Protocol (PIP)
 µOS++ IIIe implements POSIX-compatible mutual exclusion primitives with strict deterministic priority guarantees:
 - **`Normal`**: Non-recursive; re-locking by the owning thread returns `error.WouldBlock` or causes a self-deadlock.
 - **`Recursive`**: Re-entrant; tracks nested lock depth via `mx.count`. An identical number of `unlock()` calls must be performed before the mutex becomes unowned.
 - **`ErrorCheck`**: Explicit error detection; returns `error.WouldBlock` if re-locked and `error.NotPermitted` if unlocked by a non-owner.
 - **`Robust`**: Death-resilient locks. If an owning thread terminates while holding the mutex, the kernel marks `mx.owner_dead = true` and returns `error.NotRecoverable` to subsequent lockers, preventing system-wide deadlock.
 
-#### 5.1.1 The Priority Inversion Hazard
+#### 6.1.1 The Priority Inversion Hazard
 Consider three threads: $T_H$ (high priority, $P=10$), $T_M$ (medium priority, $P=20$), and $T_L$ (low priority, $P=30$):
 1. $T_L$ acquires mutex $M_1$.
 2. $T_H$ becomes ready and attempts to acquire $M_1$. It blocks because $T_L$ owns it.
@@ -526,7 +856,7 @@ Consider three threads: $T_H$ (high priority, $P=10$), $T_M$ (medium priority, $
      └──────────────┴───────────────────────────────────────► Time
 ```
 
-#### 5.1.2 Priority Inheritance Protocol & Transitive Chains
+#### 6.1.2 Priority Inheritance Protocol & Transitive Chains
 µOS++ IIIe resolves this via dynamic **Priority Inheritance**:
 1. When $T_H$ blocks on $M_1$, the kernel immediately promotes $T_L$'s effective priority to $T_H$'s priority ($P=10$):
    ```zig
@@ -543,10 +873,10 @@ Consider three threads: $T_H$ (high priority, $P=10$), $T_M$ (medium priority, $
 
 ---
 
-### 5.2 Condition Variables: State Transitions & Atomicity Guarantees
+### 6.2 Condition Variables: State Transitions & Atomicity Guarantees
 Condition variables provide signaling primitives for threads waiting on state predicates.
 
-#### 5.2.1 The Atomic Unlock-and-Enqueue Problem
+#### 6.2.1 The Atomic Unlock-and-Enqueue Problem
 In naive implementations, calling `wait(mx)` involves two separate steps: unlocking the mutex and putting the thread to sleep. If an interrupt or context switch occurs between unlocking and sleeping, a `signal()` from another thread can be lost, causing permanent thread hanging.
 
 In µOS++ IIIe, atomicity is guaranteed under `scheduler.CriticalSection`:
@@ -573,7 +903,7 @@ pub fn wait(self: *ConditionVariable, mx: *Mutex) Error!void {
 }
 ```
 
-#### 5.2.2 Spurious Wakeups & Predicate Loops
+#### 6.2.2 Spurious Wakeups & Predicate Loops
 External events (such as timeouts, thread cancellation, or broadcasts) can awaken a thread before the shared predicate is true. All condition variable usage must follow the canonical predicate evaluation loop:
 ```zig
 while (!condition_is_met) {
@@ -583,7 +913,7 @@ while (!condition_is_met) {
 
 ---
 
-### 5.3 Semaphores, Event Flags, and Message Queues
+### 6.3 Semaphores, Event Flags, and Message Queues
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -602,17 +932,17 @@ while (!condition_is_met) {
 └───────────────────┴────────────────────────────────┴───────────────────┘
 ```
 
-#### 5.3.1 Counting & Binary Semaphores
+#### 6.3.1 Counting & Binary Semaphores
 - **`CountingSemaphore`**: Backed by a 32-bit integer counter. `post()` increments the counter atomically under a critical section and wakes up the highest-priority waiting thread if the counter transitions from $0$. `wait()` blocks if the counter is $0$, otherwise decrements the counter.
 - **`BinarySemaphore`**: Equivalent to a counting semaphore with a maximum value of $1$.
 
-#### 5.3.2 Event Flags
+#### 6.3.2 Event Flags
 Event flags provide multi-bit synchronization without allocating memory:
 - **`waitAny(mask)`**: Evaluates whether $(\text{current\_flags} \ \& \ \text{mask}) \neq 0$. If any bit matches, returns immediately.
 - **`waitAll(mask)`**: Evaluates whether $(\text{current\_flags} \ \& \ \text{mask}) == \text{mask}$. Blocks until all specified bits are asserted.
 - **Atomic Clear on Exit**: If configured with `mode = .clear`, the matched bits are atomically cleared before the calling thread unblocks, preventing double processing.
 
-#### 5.3.3 Message Queues (Zero-Copy Ring Buffers)
+#### 6.3.3 Message Queues (Zero-Copy Ring Buffers)
 Message queues allow threads and ISRs to exchange structured data:
 - **Zero-Copy Architecture**: Only pointers (`*anyopaque` or `usize`) are copied into the internal circular ring buffer, avoiding stack and buffer copy overheads.
 - **Priority-Ordered Messages**: Senders can specify a message priority ($0..255$). High-priority messages are inserted at the head of the ring, bypassing normal FIFO ordering for urgent commands.
@@ -620,9 +950,39 @@ Message queues allow threads and ISRs to exchange structured data:
 
 ---
 
-## 6. Scheduler, Context Switch, and Low-Level ARM Assembly
+### 6.4 Timers on SMP: Stop Versus Re-Arm
 
-### 6.1 The Dual Stack Model: MSP vs PSP
+The clock lists are checked in the tick handler of CPU 0: a due node is unlinked under the kernel lock, and its action runs outside it. For a periodic timer the action re-arms the node. Ported faithfully from C++, the action re-armed without looking at the timer's state, and `stop()` read the state outside the lock; on SMP a timer stopped on one CPU while its action ran on another was re-armed after `stop()` returned. A stack-allocated timer then kept firing from memory that was gone, and the clock list ended up corrupted (found by `smp-rtos-apis` on the POSIX port, 4 CPUs: thousands of extra callbacks, then an assertion in `Clock.internalWaitUntil`).
+
+The fix (`src/rtos/timer.zig`): `stop()` and `deinit()` check and change the state under the lock, and the action re-arms only a timer that is still running, reading the callback and its argument under the same lock:
+
+```zig
+fn action(node: *lists.TimestampNode) void {
+    const tm: *Timer = @alignCast(@fieldParentPtr("node", node));
+    const func, const args = blk: {
+        const cs = interrupts.CriticalSection.enter();
+        defer cs.exit();
+        node.links.unlink();
+        if (tm.state != .running) return; // stopped meanwhile
+        if (tm.type == .periodic) {
+            ... // next timestamp
+            tm.clock.steady_list.link(&tm.node);
+        } else {
+            tm.state = .completed;
+        }
+        break :blk .{ tm.func, tm.func_args };
+    };
+    func(args);
+}
+```
+
+The C++ `timer::internal_callback()` has the same window.
+
+---
+
+## 7. Scheduler, Context Switch, and Low-Level ARM Assembly
+
+### 7.1 The Dual Stack Model: MSP vs PSP
 Cortex-M processors provide two stack pointer registers banked under the name `SP`:
 - **Main Stack Pointer (MSP)**: Used by the OS kernel, interrupt service routines (SysTick, UART, timers), and exception handlers (HardFault, PendSV).
 - **Process Stack Pointer (PSP)**: Used exclusively by unprivileged application threads.
@@ -646,7 +1006,7 @@ If threads ran on the MSP, deeply nested interrupts would push exception frames 
 
 ---
 
-### 6.2 Hardware Auto-Stacking (Exception Entry)
+### 7.2 Hardware Auto-Stacking (Exception Entry)
 When an interrupt or PendSV exception occurs, the ARM Cortex-M hardware automatically pushes 8 words (32 bytes) onto the active stack (PSP):
 
 ```
@@ -668,7 +1028,7 @@ If the hardware FPU is enabled and was actively used by the interrupted thread, 
 
 ---
 
-### 6.3 Software Context Switch in PendSV Assembly
+### 7.3 Software Context Switch in PendSV Assembly
 µOS++ IIIe triggers context switches by setting the PendSV bit in the NVIC Interrupt Control and State Register (ICSR). Because PendSV is configured with the lowest interrupt priority, it executes only when all other interrupts have completed.
 
 Here is the exact context switch sequence implemented in assembly:
@@ -721,7 +1081,7 @@ PendSV_Handler:
 
 ---
 
-### 6.4 Decoding EXC_RETURN
+### 7.4 Decoding EXC_RETURN
 When entering an exception handler, the processor loads the Link Register (`LR`) with an `EXC_RETURN` value:
 
 | Value | Return Mode | Stack Selected | Frame Type |
@@ -734,7 +1094,7 @@ Bit 4 (`0x10`) dynamically indicates whether the hardware FPU context was stacke
 
 ---
 
-### 6.5 Stack Watermarking & Auditing
+### 7.5 Stack Watermarking & Auditing
 Every stack is filled with the sentinel watermark `0xEFBEADDE` at initialization.
 The kernel audits runtime stack consumption by scanning from the bottom of the stack storage upwards to locate the first non-watermark word:
 ```zig
@@ -754,7 +1114,7 @@ Interrupts stack: 544/2048 bytes used
 
 ---
 
-### 6.6 Cortex-M Interrupt Architecture & The Nested Vectored Interrupt Controller (NVIC)
+### 7.6 Cortex-M Interrupt Architecture & The Nested Vectored Interrupt Controller (NVIC)
 Cortex-M microcontrollers provide hardware-managed interrupt vectoring through the NVIC. Unlike architectures requiring software dispatch tables or manual IRQ demultiplexing, the Cortex-M processor hardware fetches the target ISR address directly from the vector table located at `VTOR` (Vector Table Offset Register).
 
 ```
@@ -774,7 +1134,7 @@ Cortex-M microcontrollers provide hardware-managed interrupt vectoring through t
  └───────────────┴───────────────────────────┴──────────────────────────────────────────┘
 ```
 
-#### 6.6.1 Priority Representation & Bit-Shifting
+#### 7.6.1 Priority Representation & Bit-Shifting
 On ARM Cortex-M processors, priority registers are 8 bits wide per exception, but silicon vendors implement only the most significant bits ($3$ to $4$ bits typically).
 - **RP2350 (Cortex-M33)** implements 4 priority bits ($16$ distinct priority levels, $0$ to $15$).
 - **STM32F411 (Cortex-M4)** implements 4 priority bits ($16$ distinct priority levels, $0$ to $15$).
@@ -785,7 +1145,7 @@ Lower numerical values denote higher execution priority: $0$ is the absolute hig
 
 ---
 
-### 6.7 Managed vs Unmanaged Interrupts: `BASEPRI` vs `PRIMASK` & Zero-Latency Execution
+### 7.7 Managed vs Unmanaged Interrupts: `BASEPRI` vs `PRIMASK` & Zero-Latency Execution
 In hard real-time systems (e.g. motor control, digital power inverters, high-speed DSP sampling), critical interrupt routines must execute with predictable, deterministic latency—completely unaffected by operating system critical sections.
 
 µOS++ IIIe implements a dual interrupt masking model:
@@ -806,7 +1166,7 @@ In hard real-time systems (e.g. motor control, digital power inverters, high-spe
  └────────────────┴─────────────────────┴──────────────────┴────────────────────────┘
 ```
 
-#### 6.7.1 The `BASEPRI` Masking Mechanism (Cortex-M4 / STM32F411)
+#### 7.7.1 The `BASEPRI` Masking Mechanism (Cortex-M4 / STM32F411)
 When configured with `critical_section_interrupt_priority = 5`:
 ```zig
 pub inline fn criticalEnter() State {
@@ -823,7 +1183,7 @@ pub inline fn criticalEnter() State {
 - `setBasepriMax(5 << 4)` masks any interrupt whose numerical priority is $\ge 5$.
 - Interrupts with numerical priorities $0..4$ (the unmanaged tier) are **completely unmasked**. Even if the RTOS is performing a complex ready-list rebalancing or heap allocation, an unmanaged high-speed ADC or PWM fault interrupt executes in hardware within $12$ clock cycles.
 
-#### 6.7.2 Run-Time Priority Validation (`isPriorityValid`)
+#### 7.7.2 Run-Time Priority Validation (`isPriorityValid`)
 To prevent corrupting the kernel, an unmanaged interrupt ($P < 5$) must never invoke RTOS APIs. µOS++ enforces this via hardware register inspection:
 ```zig
 pub fn isPriorityValid() bool {
@@ -838,7 +1198,7 @@ pub fn isPriorityValid() bool {
 
 ---
 
-### 6.8 Dual-Core NVIC Topology & Peripheral Interrupt Routing on RP2350
+### 7.8 Dual-Core NVIC Topology & Peripheral Interrupt Routing on RP2350
 On the dual Cortex-M33 RP2350, interrupt topology presents distinct architectural characteristics compared to traditional SMP x86 or ARM Cortex-A systems:
 
 ```
@@ -868,7 +1228,7 @@ On the dual Cortex-M33 RP2350, interrupt topology presents distinct architectura
 
 ---
 
-### 6.9 Inter-Processor Interrupts (IPI) via SIO Hardware FIFO
+### 7.9 Inter-Processor Interrupts (IPI) via SIO Hardware FIFO
 When Core 0 updates shared kernel state (e.g. awakening a high-priority thread that is pinned to Core 1, or posting a message to a queue listened to by Core 1), Core 1 must be notified immediately to preempt its current thread.
 
 µOS++ IIIe implements an Inter-Processor Interrupt (IPI) over the RP2350 SIO hardware FIFO:
@@ -901,9 +1261,9 @@ pub fn ipi(cpu: u32) void {
 
 ---
 
-### 6.10 Dual-Core SysTick Specialization & PendSV Deferred Context Switching
+### 7.10 Dual-Core SysTick Specialization & PendSV Deferred Context Switching
 
-#### 6.10.1 Clock Drift Prevention in Dual-Core SMP
+#### 7.10.1 Clock Drift Prevention in Dual-Core SMP
 A fundamental challenge in multi-core RTOS design is maintaining a single, coherent time base. Both Core 0 and Core 1 have their own private SysTick timer hardware running at the CPU clock frequency ($150\text{ MHz}$).
 - If both cores advanced the kernel time base (`clock.advanceTick()`), the RTOS clock would advance at twice the intended rate, corrupting all `sleepFor()`, timed mutex, and software timer delays.
 - In µOS++ IIIe, the SysTick interrupt handler is specialized by core ID:
@@ -920,7 +1280,7 @@ A fundamental challenge in multi-core RTOS design is maintaining a single, coher
   ```
   Core 0 exclusively updates the global tick counter, walks the sleep list, and wakes timed threads. Core 1 uses its SysTick strictly as a time-slice interrupt, ensuring perfect clock accuracy.
 
-#### 6.10.2 Deferred Context Switching via PendSV
+#### 7.10.2 Deferred Context Switching via PendSV
 Cortex-M microcontrollers do not permit context switching directly from within standard peripheral ISRs. Doing so would push multiple exception frames onto the MSP and corrupt nested interrupt states.
 - Context switching is always deferred to **PendSV (Pended Service Call)**, which is configured to the absolute lowest execution priority ($0\text{xFF}$).
 - When an ISR calls `scheduler.reschedule()`, it sets bit 28 (`PENDSVSET`) in `ICSR`.
@@ -928,9 +1288,9 @@ Cortex-M microcontrollers do not permit context switching directly from within s
 
 ---
 
-## 7. How Tests are Written, Wired, and Executed
+## 8. How Tests are Written, Wired, and Executed
 
-### 7.1 Anatomy of a Test Suite
+### 8.1 Anatomy of a Test Suite
 Tests reside in `micro-os-plus-iii/tests/suites/` (portable tests) or `test/<board>/<test>/` (board-specific tests).
 
 Every test follows a standardized structure using `uos_test`:
@@ -980,7 +1340,7 @@ The assertion API provides source location tracking via Zig's `@src()`:
 
 ---
 
-### 7.2 Wiring Tests into `build.zig`
+### 8.2 Wiring Tests into `build.zig`
 In `micro-os-plus-iii-cortexm/build.zig`, tests are enumerated and conditionally generated:
 ```zig
 const tests = [_]Test{
@@ -1009,7 +1369,7 @@ const tests = [_]Test{
 
 ---
 
-### 7.3 Automated Hardware Execution via OpenOCD & Semihosting (`test/hw.sh`)
+### 8.3 Automated Hardware Execution via OpenOCD & Semihosting (`test/hw.sh`)
 
 Testing embedded hardware requires an automated feedback loop without human intervention.
 The runner script `test/hw.sh` orchestrates this via OpenOCD and ARM Semihosting:
@@ -1055,7 +1415,7 @@ The runner script `test/hw.sh` orchestrates this via OpenOCD and ARM Semihosting
 
 ---
 
-## 8. C Code: the C API, CMSIS-RTOS v1 and a Minimal C Runtime
+## 9. C Code: the C API, CMSIS-RTOS v1 and a Minimal C Runtime
 
 C sources can be linked with the kernel and call it as in C++. There is one kernel only: the C functions are thin wrappers that convert their arguments and call the Zig objects; they have no logic of their own. Each layer is exported only when enabled in `uos.Options`.
 
@@ -1065,7 +1425,7 @@ C sources can be linked with the kernel and call it as in C++. There is one kern
 | CMSIS-RTOS v1 | `cmsis_os` | `src/cmsis_os.zig` | `cmsis-plus/legacy/cmsis_os.h` | `os-c-wrapper.cpp` (legacy part) |
 | Minimal C runtime | `c_runtime` | `src/libc.zig` | `c/stdio.h`, `c/string.h`, `c/assert.h`, `cmsis-plus/diag/trace.h` | newlib, `trace.cpp` |
 
-### 8.1 Object Storage
+### 9.1 Object Storage
 The C application allocates the objects (`os_thread_t th;`, `osMutexDef(mx)`, ...) and passes pointers. In C++, `os-c-decls.h` mirrors the C++ class members; here the objects are opaque storage, in pointer words, large enough for the Zig objects:
 ```c
 typedef struct os_thread_s
@@ -1073,26 +1433,26 @@ typedef struct os_thread_s
   _Alignas (8) void* storage[OS_C_THREAD_STORAGE_WORDS];
 } os_thread_t;
 ```
-The Zig object lives at the start of the storage. The sizes are repeated in `src/c_storage.zig`: the build fails when a Zig object outgrows its storage, and a host test (`zig build test`) fails when the header disagrees. The types, enumerations and attribute structures are the C++ ones, so C code written for the C++ API compiles unchanged.
+The Zig object lives at the start of the storage. The sizes are repeated in `src/c_storage.zig`: the build fails when a Zig object outgrows its storage, and a host test (`zig build test`) fails when the header disagrees. A port may raise some sizes: the POSIX port, whose threads carry a whole glibc `ucontext_t`, ships `include/cmsis-plus/rtos/port/os-c-storage.h` (included by `os-c-decls.h` when present) and the same numbers as `c_storage_words` in its `port.zig`. The types, enumerations and attribute structures are the C++ ones, so C code written for the C++ API compiles unchanged.
 
 Threads and timers run C functions: the Zig object calls a trampoline, and the C function and its argument are kept in the storage after the Zig object. The same trampoline also runs the CMSIS-RTOS v1 thread functions (`void f(const void*)`).
 
-### 8.2 Status Codes
+### 9.2 Status Codes
 The C API returns the POSIX `errno` values of `rtos.errno()`. The CMSIS-RTOS v1 layer maps the results exactly as the C++ wrapper does. One difference comes from the kernels: the C++ `sleep_for()` returns `ETIMEDOUT` when the time elapsed, the Zig `sleepFor()` returns normally; `osDelay()` returns `osEventTimeout` in both cases.
 
-### 8.3 The Minimal C Runtime
+### 9.3 The Minimal C Runtime
 A freestanding target has no libc, and MicroZig's foundation-libc has no `printf`. `c_runtime` exports what the C tests need, with the output on the kernel trace channel: `printf`, `vprintf`, `snprintf`, `vsnprintf`, `fprintf`, `vfprintf`, `fflush`, `puts`, `putchar`; `strlen`, `strcmp`, `strncmp`, `strcpy`, `strncpy`, `strchr`, `strrchr` (the `mem*` functions come from compiler_rt); `assert` (to the Zig panic handler); `trace_printf` and the other `trace_*` functions. Hosted targets use their own libc instead.
 
-### 8.4 What is Not Provided
+### 9.4 What is Not Provided
 `os_thread_get_user_storage()` (the kernel has no thread user storage) and the C startup hooks (`os-hooks.h`). `os_thread_attr_t.th_cpu_affinity` is always present (C++: only with `OS_USE_SMP_SCHEDULER`).
 
 ---
 
-## 9. Hardware Test Verification Matrix
+## 10. Hardware Test Verification Matrix
 
 Every test is a faithful port of a C++ test (same banners, lines, LED behaviour and verdict); the deviations are stated in each `main.zig`. The harness suites (`fp-switch`, `mutex-stress`, `rtos-apis`, `cmsis-os-validator`) run as in the C++ pico2 harness build: one CPU, with the suite's `os-app-config.h` values.
 
-### 9.1 Raspberry Pi Pico 2 (RP2350 Dual Cortex-M33 SMP)
+### 10.1 Raspberry Pi Pico 2 (RP2350 Dual Cortex-M33 SMP)
 *Probed with the Raspberry Pi Debug Probe (`2e8a:000c`). Reset or power cycle the board between tests.*
 
 | Test | Status | Notes |
@@ -1114,8 +1474,8 @@ Every test is a faithful port of a C++ test (same banners, lines, LED behaviour 
 | `cmsis-os-validator` | **PASS** | Arm CMSIS-RTOS validator, 60/60. |
 | `io-test` | **PASS** | `std.Io` suite, 25/25. |
 
-### 9.2 WeAct Black Pill (STM32F411CE Cortex-M4F Single-Core)
-*Probed with a WCH-Link in ARM mode (`1a86:8011`). It may drop the connection under heavy semihosting traffic; reset and run again.*
+### 10.2 WeAct Black Pill (STM32F411CE Cortex-M4F Single-Core)
+*Probed with a WCH-Link in ARM mode (`1a86:8011`). It may drop the connection under heavy semihosting traffic; reset and run again. The probe also bridges the UART, and drops what it has not forwarded when OpenOCD disconnects: `terminate()` therefore drains the UART and waits about 1 s before the semihosting `SYS_EXIT`.*
 
 | Test | Status | Notes |
 |---|---|---|
@@ -1129,5 +1489,26 @@ Every test is a faithful port of a C++ test (same banners, lines, LED behaviour 
 
 ---
 
-## 10. Conclusion
+### 10.3 POSIX Host (GNU/Linux x86_64, host threads as CPUs)
+*The `micro-os-plus-iii-posix-arch` port; `test/run-all.sh` runs all of them. Outputs compared with the C++ native builds of the `smp` branch.*
+
+| Test | Status | Notes |
+|---|---|---|
+| `smp-test0`..`smp-test4` | **PASS** | 4 CPUs; same counts as C++ (test1 far more rounds: the resume IPI). |
+| `smp-mat-test` | **PASS** | All 500 solution values identical to C++. |
+| `smp-mutex-stress` | **PASS** | No overlap, no lock off the pinned CPU, no lost update. |
+| `smp-pro-cons-test` | **PASS** | Every kernel object; totals within a packet of C++. |
+| `smp-rtos-apis` | **PASS** | The rtos-apis sequence on each CPU (found the timer race, 6.4). |
+| `smp-num-test`, `smp-pipeline-test` | **PASS** | flatfs on the host-file SD card. |
+| `mutex-ceiling-test` | **PASS** | Output identical to C++. |
+| `flatfs-test` | **PASS** | The disk image byte-identical to the C++ one. |
+| `rtos-apis`, `mutex-stress` | **PASS** | One CPU, as the C++ native build. |
+| `cmsis-os-validator` | **PASS** | 60/60; the test interrupt is SIGUSR1. |
+| `trace-stdout`, `trace-stderr` | **PASS** | The trace on each stream. |
+
+The design of that port is in `micro-os-plus-iii-posix-arch/docs/posix-port-architecture-and-internals.md`.
+
+---
+
+## 11. Conclusion
 The Zig port of µOS++ IIIe demonstrates that modern systems programming languages can achieve safety, expressiveness, and maintainability without sacrificing real-time determinism or silicon efficiency. Through compile-time static configuration, explicit memory allocators, SIO hardware spinlocks, clean MSP/PSP separation, and an automated OpenOCD test framework, the system delivers rock-solid SMP real-time performance on Cortex-M microcontrollers.
