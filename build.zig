@@ -78,6 +78,10 @@ const tests = [_]Test{
         .c_flags = &.{ "-std=gnu11", "-DTRACE", "-DOS_USE_OS_APP_CONFIG_H" },
         .cmsis_rv = true,
     },
+    .{ .name = "sd-test", .devices = true },
+    .{ .name = "smp-num-test", .devices = true },
+    .{ .name = "smp-mem-test" },
+    .{ .name = "smp-mem-inter-test" },
 };
 
 pub fn build(b: *std.Build) void {

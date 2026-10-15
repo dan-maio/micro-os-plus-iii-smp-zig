@@ -14,7 +14,7 @@ pub fn options(ncpu: u8) uos.Options {
         .default_stack_size_bytes = 16 * 1024,
         .idle_stack_size_bytes = 16 * 1024,
         .min_stack_size_bytes = 2048,
-        .dynamic_memory_size_bytes = 256 * 1024,
+        .dynamic_memory_size_bytes = 8 * 1024 * 1024,
     };
 }
 
@@ -96,6 +96,8 @@ pub fn cpuSlot() u32 {
     const id = uos.port.scheduler.cpuId();
     return if (id < uos.config.ncpu) id else 0;
 }
+
+pub const mmu = uos.port.mmu;
 
 pub const hw_result = struct {
     pub fn ok() noreturn {
