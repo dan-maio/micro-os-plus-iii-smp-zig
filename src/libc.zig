@@ -15,19 +15,26 @@
 //! length modifiers hh h l ll z j t. No floating point.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const config = @import("config.zig");
 const trace = @import("trace.zig");
+
+const can_c_va = !(builtin.cpu.arch == .aarch64 and builtin.zig_backend == .stage2_llvm);
 
 comptime {
     if (config.options.c_runtime) {
         const weak: std.lang.GlobalLinkage = .weak;
+        if (can_c_va) {
+            for (.{
+                .{ "printf", &VaFns.printf },
+                .{ "vprintf", &VaFns.vprintf },
+                .{ "snprintf", &VaFns.snprintf },
+                .{ "vsnprintf", &VaFns.vsnprintf },
+                .{ "fprintf", &VaFns.fprintf },
+                .{ "vfprintf", &VaFns.vfprintf },
+            }) |e| @export(e[1], .{ .name = e[0], .linkage = weak });
+        }
         for (.{
-            .{ "printf", &printf },
-            .{ "vprintf", &vprintf },
-            .{ "snprintf", &snprintf },
-            .{ "vsnprintf", &vsnprintf },
-            .{ "fprintf", &fprintf },
-            .{ "vfprintf", &vfprintf },
             .{ "fflush", &fflush },
             .{ "puts", &puts },
             .{ "putchar", &putchar },
@@ -45,9 +52,13 @@ comptime {
     // also on hosted targets, which have their own libc.
     if (config.options.c_runtime or config.options.c_api) {
         const weak: std.lang.GlobalLinkage = .weak;
+        if (can_c_va) {
+            for (.{
+                .{ "trace_printf", &VaFns.printf },
+                .{ "trace_vprintf", &VaFns.vprintf },
+            }) |e| @export(e[1], .{ .name = e[0], .linkage = weak });
+        }
         for (.{
-            .{ "trace_printf", &printf },
-            .{ "trace_vprintf", &vprintf },
             .{ "trace_puts", &puts },
             .{ "trace_putchar", &putchar },
             .{ "trace_write", &traceWrite },
@@ -150,182 +161,179 @@ fn putNumber(sink: anytype, magnitude: u64, negative: bool, base: u8, upper: boo
     if (spec.left) pad(sink, ' ', fill);
 }
 
-const Length = enum { hh, h, none, l, ll, z, j, t };
+const VaFns = if (can_c_va) struct {
+    const Length = enum { hh, h, none, l, ll, z, j, t };
 
-fn format(sink: anytype, fmt: [*:0]const u8, ap: *std.builtin.VaList) void {
-    var i: usize = 0;
-    while (fmt[i] != 0) : (i += 1) {
-        const c = fmt[i];
-        if (c != '%') {
-            sink.put(c);
-            continue;
-        }
-        i += 1;
-
-        var spec: Spec = .{};
-        while (true) : (i += 1) {
-            switch (fmt[i]) {
-                '-' => spec.left = true,
-                '0' => spec.zero = true,
-                '+' => spec.plus = true,
-                ' ' => spec.space = true,
-                '#' => spec.alt = true,
-                else => break,
+    fn format(sink: anytype, fmt: [*:0]const u8, ap: *std.builtin.VaList) void {
+        var i: usize = 0;
+        while (fmt[i] != 0) : (i += 1) {
+            const c = fmt[i];
+            if (c != '%') {
+                sink.put(c);
+                continue;
             }
-        }
-        if (fmt[i] == '*') {
-            const w = @cVaArg(ap, c_int);
-            if (w < 0) {
-                spec.left = true;
-                spec.width = @intCast(-w);
-            } else spec.width = @intCast(w);
             i += 1;
-        } else while (fmt[i] >= '0' and fmt[i] <= '9') : (i += 1) {
-            spec.width = spec.width * 10 + (fmt[i] - '0');
-        }
-        if (fmt[i] == '.') {
-            i += 1;
-            var p: usize = 0;
+
+            var spec: Spec = .{};
+            while (true) : (i += 1) {
+                switch (fmt[i]) {
+                    '-' => spec.left = true,
+                    '0' => spec.zero = true,
+                    '+' => spec.plus = true,
+                    ' ' => spec.space = true,
+                    '#' => spec.alt = true,
+                    else => break,
+                }
+            }
             if (fmt[i] == '*') {
-                const v = @cVaArg(ap, c_int);
-                p = if (v < 0) 0 else @intCast(v);
+                const w = @cVaArg(ap, c_int);
+                if (w < 0) {
+                    spec.left = true;
+                    spec.width = @intCast(-w);
+                } else spec.width = @intCast(w);
                 i += 1;
             } else while (fmt[i] >= '0' and fmt[i] <= '9') : (i += 1) {
-                p = p * 10 + (fmt[i] - '0');
+                spec.width = spec.width * 10 + (fmt[i] - '0');
             }
-            spec.precision = p;
-        }
-
-        var length: Length = .none;
-        switch (fmt[i]) {
-            'h' => {
-                length = .h;
-                if (fmt[i + 1] == 'h') {
-                    length = .hh;
+            if (fmt[i] == '.') {
+                i += 1;
+                var p: usize = 0;
+                if (fmt[i] == '*') {
+                    const v = @cVaArg(ap, c_int);
+                    p = if (v < 0) 0 else @intCast(v);
                     i += 1;
+                } else while (fmt[i] >= '0' and fmt[i] <= '9') : (i += 1) {
+                    p = p * 10 + (fmt[i] - '0');
                 }
-                i += 1;
-            },
-            'l' => {
-                length = .l;
-                if (fmt[i + 1] == 'l') {
-                    length = .ll;
-                    i += 1;
-                }
-                i += 1;
-            },
-            'z' => {
-                length = .z;
-                i += 1;
-            },
-            'j' => {
-                length = .j;
-                i += 1;
-            },
-            't' => {
-                length = .t;
-                i += 1;
-            },
-            else => {},
-        }
+                spec.precision = p;
+            }
 
-        switch (fmt[i]) {
-            0 => return,
-            '%' => sink.put('%'),
-            'c' => {
-                const ch: u8 = @truncate(@as(c_uint, @bitCast(@cVaArg(ap, c_int))));
-                putString(sink, &.{ch}, .{ .left = spec.left, .width = spec.width });
-            },
-            's' => {
-                const s = @cVaArg(ap, ?[*:0]const u8);
-                putString(sink, if (s) |p| std.mem.span(p) else "(null)", spec);
-            },
-            'd', 'i' => {
-                const v: i64 = switch (length) {
-                    .hh => @as(i8, @truncate(@cVaArg(ap, c_int))),
-                    .h => @as(i16, @truncate(@cVaArg(ap, c_int))),
-                    .none => @cVaArg(ap, c_int),
-                    .l => @cVaArg(ap, c_long),
-                    .ll, .j => @cVaArg(ap, c_longlong),
-                    .z, .t => @as(isize, @bitCast(@cVaArg(ap, usize))),
-                };
-                putNumber(sink, @abs(v), v < 0, 10, false, spec, "");
-            },
-            'u', 'x', 'X', 'o' => {
-                const v: u64 = switch (length) {
-                    .hh => @as(u8, @truncate(@cVaArg(ap, c_uint))),
-                    .h => @as(u16, @truncate(@cVaArg(ap, c_uint))),
-                    .none => @cVaArg(ap, c_uint),
-                    .l => @cVaArg(ap, c_ulong),
-                    .ll, .j => @cVaArg(ap, c_ulonglong),
-                    .z, .t => @cVaArg(ap, usize),
-                };
-                const base: u8 = switch (fmt[i]) {
-                    'x', 'X' => 16,
-                    'o' => 8,
-                    else => 10,
-                };
-                const prefix: []const u8 = if (!spec.alt or v == 0) "" else switch (fmt[i]) {
-                    'x' => "0x",
-                    'X' => "0X",
-                    'o' => "0",
-                    else => "",
-                };
-                putNumber(sink, v, false, base, fmt[i] == 'X', spec, prefix);
-            },
-            'p' => {
-                const p = @intFromPtr(@cVaArg(ap, ?*anyopaque));
-                putNumber(sink, p, false, 16, false, spec, "0x");
-            },
-            else => |other| {
-                // Unknown conversion: print it as is.
-                sink.put('%');
-                sink.put(other);
-            },
+            var length: Length = .none;
+            switch (fmt[i]) {
+                'h' => {
+                    length = .h;
+                    if (fmt[i + 1] == 'h') {
+                        length = .hh;
+                        i += 1;
+                    }
+                    i += 1;
+                },
+                'l' => {
+                    length = .l;
+                    if (fmt[i + 1] == 'l') {
+                        length = .ll;
+                        i += 1;
+                    }
+                    i += 1;
+                },
+                'z' => {
+                    length = .z;
+                    i += 1;
+                },
+                'j' => {
+                    length = .j;
+                    i += 1;
+                },
+                't' => {
+                    length = .t;
+                    i += 1;
+                },
+                else => {},
+            }
+
+            switch (fmt[i]) {
+                0 => return,
+                '%' => sink.put('%'),
+                'c' => {
+                    const ch: u8 = @truncate(@as(c_uint, @bitCast(@cVaArg(ap, c_int))));
+                    putString(sink, &.{ch}, .{ .left = spec.left, .width = spec.width });
+                },
+                's' => {
+                    const s = @cVaArg(ap, ?[*:0]const u8);
+                    putString(sink, if (s) |p| std.mem.span(p) else "(null)", spec);
+                },
+                'd', 'i' => {
+                    const v: i64 = switch (length) {
+                        .hh => @as(i8, @truncate(@cVaArg(ap, c_int))),
+                        .h => @as(i16, @truncate(@cVaArg(ap, c_int))),
+                        .none => @cVaArg(ap, c_int),
+                        .l => @cVaArg(ap, c_long),
+                        .ll, .j => @cVaArg(ap, c_longlong),
+                        .z, .t => @as(isize, @bitCast(@cVaArg(ap, usize))),
+                    };
+                    putNumber(sink, @abs(v), v < 0, 10, false, spec, "");
+                },
+                'u', 'x', 'X', 'o' => {
+                    const v: u64 = switch (length) {
+                        .hh => @as(u8, @truncate(@cVaArg(ap, c_uint))),
+                        .h => @as(u16, @truncate(@cVaArg(ap, c_uint))),
+                        .none => @cVaArg(ap, c_uint),
+                        .l => @cVaArg(ap, c_ulong),
+                        .ll, .j => @cVaArg(ap, c_ulonglong),
+                        .z, .t => @cVaArg(ap, usize),
+                    };
+                    const base: u8 = switch (fmt[i]) {
+                        'x', 'X' => 16,
+                        'o' => 8,
+                        else => 10,
+                    };
+                    const prefix: []const u8 = if (!spec.alt or v == 0) "" else switch (fmt[i]) {
+                        'x' => "0x",
+                        'X' => "0X",
+                        'o' => "0",
+                        else => "",
+                    };
+                    putNumber(sink, v, false, base, fmt[i] == 'X', spec, prefix);
+                },
+                'p' => {
+                    const p = @intFromPtr(@cVaArg(ap, ?*anyopaque));
+                    putNumber(sink, p, false, 16, false, spec, "0x");
+                },
+                else => |other| {
+                    sink.put('%');
+                    sink.put(other);
+                },
+            }
         }
     }
-}
 
-// ----------------------------------------------------------------------------
-// stdio.h
+    fn vprintf(fmt: [*:0]const u8, ap: *std.builtin.VaList) callconv(.c) c_int {
+        var sink: TraceSink = .{};
+        format(&sink, fmt, ap);
+        sink.flush();
+        return @intCast(sink.count);
+    }
 
-fn vprintf(fmt: [*:0]const u8, ap: *std.builtin.VaList) callconv(.c) c_int {
-    var sink: TraceSink = .{};
-    format(&sink, fmt, ap);
-    sink.flush();
-    return @intCast(sink.count);
-}
+    fn printf(fmt: [*:0]const u8, ...) callconv(.c) c_int {
+        var ap = @cVaStart();
+        defer @cVaEnd(&ap);
+        return vprintf(fmt, &ap);
+    }
 
-fn printf(fmt: [*:0]const u8, ...) callconv(.c) c_int {
-    var ap = @cVaStart();
-    defer @cVaEnd(&ap);
-    return vprintf(fmt, &ap);
-}
+    fn vsnprintf(buf: [*]u8, size: usize, fmt: [*:0]const u8, ap: *std.builtin.VaList) callconv(.c) c_int {
+        var sink: BufferSink = .{ .buf = buf, .size = size };
+        format(&sink, fmt, ap);
+        sink.finish();
+        return @intCast(sink.count);
+    }
 
-fn vsnprintf(buf: [*]u8, size: usize, fmt: [*:0]const u8, ap: *std.builtin.VaList) callconv(.c) c_int {
-    var sink: BufferSink = .{ .buf = buf, .size = size };
-    format(&sink, fmt, ap);
-    sink.finish();
-    return @intCast(sink.count);
-}
+    fn snprintf(buf: [*]u8, size: usize, fmt: [*:0]const u8, ...) callconv(.c) c_int {
+        var ap = @cVaStart();
+        defer @cVaEnd(&ap);
+        return vsnprintf(buf, size, fmt, &ap);
+    }
 
-fn snprintf(buf: [*]u8, size: usize, fmt: [*:0]const u8, ...) callconv(.c) c_int {
-    var ap = @cVaStart();
-    defer @cVaEnd(&ap);
-    return vsnprintf(buf, size, fmt, &ap);
-}
+    fn vfprintf(stream: ?*anyopaque, fmt: [*:0]const u8, ap: *std.builtin.VaList) callconv(.c) c_int {
+        _ = stream;
+        return vprintf(fmt, ap);
+    }
 
-/// There are no files: every stream is the trace channel.
-fn vfprintf(stream: ?*anyopaque, fmt: [*:0]const u8, ap: *std.builtin.VaList) callconv(.c) c_int {
-    _ = stream;
-    return vprintf(fmt, ap);
-}
-
-fn fprintf(stream: ?*anyopaque, fmt: [*:0]const u8, ...) callconv(.c) c_int {
-    var ap = @cVaStart();
-    defer @cVaEnd(&ap);
-    return vfprintf(stream, fmt, &ap);
-}
+    fn fprintf(stream: ?*anyopaque, fmt: [*:0]const u8, ...) callconv(.c) c_int {
+        var ap = @cVaStart();
+        defer @cVaEnd(&ap);
+        return vfprintf(stream, fmt, &ap);
+    }
+} else struct {};
 
 /// The trace output is not buffered beyond a call.
 fn fflush(stream: ?*anyopaque) callconv(.c) c_int {
