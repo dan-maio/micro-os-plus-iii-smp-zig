@@ -31,6 +31,7 @@ SECTIONS
 
     .data : ALIGN(8) {
         *(.data*)
+        *(.got*)
     } > RAM
 
     .bss (NOLOAD) : ALIGN(16) {

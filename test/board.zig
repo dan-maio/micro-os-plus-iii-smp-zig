@@ -99,9 +99,11 @@ pub fn cpuSlot() u32 {
 
 pub const hw_result = struct {
     pub fn ok() noreturn {
+        uos.port.semihosting.write0("\nRESULT: PASS\n");
         uos.port.terminate(0);
     }
     pub fn fail() noreturn {
+        uos.port.semihosting.write0("\nRESULT: FAIL\n");
         uos.port.terminate(1);
     }
 };
