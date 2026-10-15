@@ -40,6 +40,7 @@ const tests = [_]Test{
     .{ .name = "smp-test2" },
     .{ .name = "smp-test3" },
     .{ .name = "smp-test4" },
+    .{ .name = "smp-mat-test" },
 };
 
 pub fn build(b: *std.Build) void {
