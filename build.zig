@@ -25,6 +25,34 @@ const boards = [_]Board{
 
 const Test = struct {
     name: []const u8,
+    c_sources: []const []const u8 = &.{},
+    c_flags: []const []const u8 = &.{},
+    c_include: ?[]const u8 = null,
+    devices: bool = false,
+    cmsis_rv: bool = false,
+};
+
+const cmsis_rv_sources = [_][]const u8{
+    "cmsis-plus/src/main.c",
+    "Source/RV_Framework.c",
+    "Source/cmsis_rv.c",
+    "Source/RV_Signal.c",
+    "Source/RV_Report.c",
+    "Source/RV_Thread.c",
+    "Source/RV_MailQueue.c",
+    "Source/RV_Timer.c",
+    "Source/RV_GenWait.c",
+    "Source/RV_WaitFunc.c",
+    "Source/RV_MemoryPool.c",
+    "Source/RV_MsgQueue.c",
+    "Source/RV_Mutex.c",
+    "Source/RV_Semaphore.c",
+};
+
+const cmsis_rv_flags = [_][]const u8{
+    "-std=gnu11",
+    "-DTRACE",
+    "-DOS_INTEGER_SYSTICK_FREQUENCY_HZ=1000",
 };
 
 const tests = [_]Test{
@@ -34,6 +62,22 @@ const tests = [_]Test{
     .{ .name = "smp-test3" },
     .{ .name = "smp-test4" },
     .{ .name = "smp-mat-test" },
+    .{ .name = "mutex-stress" },
+    .{ .name = "smp-pro-cons-test" },
+    .{
+        .name = "rtos-apis",
+        .c_sources = &.{"test/rtos-apis/test-c-api.c"},
+        .c_flags = &.{ "-std=c11", "-DOS_INTEGER_RTOS_DEFAULT_STACK_SIZE_BYTES=16384", "-DOS_INTEGER_SYSTICK_FREQUENCY_HZ=1000" },
+        .c_include = "test/rtos-apis",
+    },
+    .{ .name = "smp-pipeline-test", .devices = true },
+    .{ .name = "smp-mat-sdcard-test", .devices = true },
+    .{
+        .name = "cmsis-os-validator",
+        .c_sources = &.{"test/cmsis-os-validator/validator-glue.c"},
+        .c_flags = &.{ "-std=gnu11", "-DTRACE", "-DOS_USE_OS_APP_CONFIG_H" },
+        .cmsis_rv = true,
+    },
 };
 
 pub fn build(b: *std.Build) void {
@@ -41,6 +85,10 @@ pub fn build(b: *std.Build) void {
     const board_id = b.option(BoardId, "board", "Target board (default rpi4b)") orelse .rpi4b;
     const only_test = b.option([]const u8, "test", "Build (and run) only this test");
     const qemu_bin = b.option([]const u8, "qemu", "Path to qemu-system-aarch64");
+    const cmsis_rv_opt = b.option([]const u8, "cmsis_rv", "The arm-cmsis-rtos-validator xPack folder");
+
+    const cmsis_rv_path: ?[]const u8 = cmsis_rv_opt orelse
+        if (b.graph.environ_map.get("HOME")) |home| b.fmt("{s}/.local/xPacks/@xpacks/arm-cmsis-rtos-validator/1.0.0-4", .{home}) else null;
 
     const kernel_dep = b.dependency("micro_os_plus_iii", .{});
 
@@ -59,6 +107,7 @@ pub fn build(b: *std.Build) void {
 
     for (tests) |t| {
         if (only_test) |name| if (!std.mem.eql(u8, name, t.name)) continue;
+        if (t.cmsis_rv and cmsis_rv_path == null) continue;
 
         const exe = addFirmware(b, kernel_dep, .{
             .name = t.name,
@@ -66,6 +115,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .app_source_file = b.path(b.fmt("test/{s}/main.zig", .{t.name})),
+            .test_def = t,
+            .cmsis_rv_path = cmsis_rv_path,
         });
 
         const install_elf = b.addInstallArtifact(exe, .{
@@ -112,6 +163,8 @@ pub const FirmwareOptions = struct {
     target: std.Build.ResolvedTarget,
     optimize: std.lang.Optimize,
     app_source_file: std.Build.LazyPath,
+    test_def: Test,
+    cmsis_rv_path: ?[]const u8 = null,
 };
 
 pub fn addFirmware(
@@ -151,6 +204,18 @@ pub fn addFirmware(
         },
     });
 
+    if (options.test_def.devices) {
+        const sd_mod = b.createModule(.{ .root_source_file = b.path("drivers/sd.zig") });
+        sd_mod.addImport("uos", uos_mod);
+
+        const flatfs_mod = b.createModule(.{ .root_source_file = b.path("drivers/flatfs.zig") });
+        flatfs_mod.addImport("sd", sd_mod);
+        flatfs_mod.addImport("uos", uos_mod);
+
+        app_mod.addImport("sd", sd_mod);
+        app_mod.addImport("flatfs", flatfs_mod);
+    }
+
     const root_mod = b.createModule(.{
         .root_source_file = b.path("test/start.zig"),
         .target = options.target,
@@ -162,6 +227,23 @@ pub fn addFirmware(
         },
     });
     root_mod.addAssemblyFile(b.path(b.fmt("{s}/startup.S", .{board_dir})));
+
+    if (options.test_def.c_sources.len > 0 or options.test_def.cmsis_rv) {
+        uos_build.addCIncludes(kernel_dep, root_mod, true);
+        root_mod.addIncludePath(b.path("include"));
+        root_mod.addCSourceFile(.{ .file = b.path("src/c_printf.c"), .flags = &.{"-std=c11"} });
+        if (options.test_def.c_include) |inc| root_mod.addIncludePath(b.path(inc));
+        if (options.test_def.c_sources.len > 0) {
+            root_mod.addCSourceFiles(.{ .files = options.test_def.c_sources, .flags = options.test_def.c_flags });
+        }
+        if (options.test_def.cmsis_rv and options.cmsis_rv_path != null) {
+            const rv: std.Build.LazyPath = .{ .cwd_relative = options.cmsis_rv_path.? };
+            root_mod.addIncludePath(rv.path(b, "Include"));
+            root_mod.addIncludePath(rv.path(b, "cmsis-plus/include"));
+            root_mod.addIncludePath(kernel_dep.path("include/cmsis-plus/legacy"));
+            root_mod.addCSourceFiles(.{ .root = rv, .files = &cmsis_rv_sources, .flags = &cmsis_rv_flags });
+        }
+    }
 
     const exe = b.addExecutable(.{
         .name = options.name,
