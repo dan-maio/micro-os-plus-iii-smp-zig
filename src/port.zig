@@ -253,8 +253,14 @@ pub const scheduler = struct {
             if (cpu < ncpu) ctx_pending[cpu] = 1;
             return;
         }
-        // The handler saves and restores every register but LR (the call).
-        asm volatile ("bl port_ctx_switch_handler" ::: .{ .lr = true, .memory = true });
+        // A call, as in C++ (`port_ctx_switchHandler()`): the handler
+        // restores the callee-saved registers and the VFP file, but not the
+        // caller-saved r0-r3 and r12 (r2 comes back as the CPSR it saved
+        // first), so they are clobbers here, with LR and the flags.
+        asm volatile ("bl port_ctx_switch_handler" ::: .{
+            .r0 = true, .r1 = true, .r2 = true, .r3 = true, .r12 = true,
+            .lr = true, .cpsr = true, .memory = true,
+        });
     }
 
     pub fn waitForInterrupt() void {
