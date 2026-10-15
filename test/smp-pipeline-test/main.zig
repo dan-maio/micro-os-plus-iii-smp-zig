@@ -1,19 +1,26 @@
-//! smp-pipeline-test -- multi-stage pipeline across Cortex-A72 cores on RPi4B
-//! (the C++ test/rpi4b/smp-pipeline-test).
+//! smp-pipeline-test -- a multi-stage pipeline across CPUs (the C++
+//! test/rpi4b/smp-pipeline-test, its HW_BUILD branch: FatFs on the
+//! existing FAT32 partition of the board's SD card, tests/pipe.dat, the
+//! card never formatted).
 //!
 //! Thirteen threads: 4 producers (timestamped records with a CRC), 4
 //! compute workers (transform, new CRC), 2 SD writers (batches of 8 records
 //! appended to pipe.dat), 1 auditor (reads pipe.dat back from its last
 //! offset and checks every CRC and the per-source order), 1 LED pacer and 1
 //! telemetry thread. Bounded queues with counting semaphores, and yield()
-//! everywhere. After RUN_MS: PASS when records were audited without
+//! everywhere. After RUN_MS (30 s): PASS when records were audited without
 //! a CRC, order or write error.
+//!
+//! Differences from C++: the kernel prints its startup banner and creates
+//! the secondary idle threads; the priorities are given at creation; the
+//! auditor parses the records itself (C++: sscanf()). The 2048- and
+//! 4096-element stacks are used as given, as in C++.
 
 const std = @import("std");
 const uos = @import("uos");
 const board = @import("board");
 const sd = @import("sd");
-const flatfs = @import("flatfs");
+const fatfs = @import("fatfs");
 const rtos = uos.rtos;
 const sysclock = rtos.sysclock;
 const this_thread = rtos.this_thread;
@@ -22,14 +29,13 @@ const console = board.console;
 
 pub const uos_options = board.options(4);
 
-const run_ms: u32 = 20000;
+const run_ms: u32 = 30000;
 
 fn cpuId() u32 {
     return uos.port.scheduler.cpuId();
 }
 
 var g_card: sd.SdCard = .{};
-var g_fs: flatfs.FlatFs = .{};
 const pipe_file = "pipe.dat";
 
 // Mutexes.
@@ -113,8 +119,7 @@ fn inc(c: *Counter) void {
 
 fn countYield(c: *Counter) void {
     inc(c);
-    const id = cpuId();
-    if (id < ncpu) inc(&g_yield_by_core[id]);
+    inc(&g_yield_by_core[cpuId()]);
 }
 
 // The audit read window: one read, not the file (which grows all along).
@@ -124,30 +129,40 @@ var g_read_buf: [audit_window]u8 = undefined;
 // ---- SD helpers --------------------------------------------------------------
 
 fn sdPrepare() void {
-    console("Initialising SD card via SDHCI...\n", .{});
+    console("Initialising SD card via SDHCI (EMMC2 @0xFE340000)...\n", .{});
     if (!g_card.init()) {
-        console("  SD init FAILED: {s}\n", .{g_card.last_error()});
+        console("  SD init FAILED: {s}\n", .{g_card.lastError()});
         board.hw_result.fail();
     }
-    console("  SD card ready: {d} sectors (~{d} MiB)\n", .{ g_card.sector_count(), g_card.capacity_bytes() >> 20 });
-    g_fs.format(&g_card) catch |err| {
-        console("  flatfs format failed: {s}\n", .{flatfs.resultStr(err)});
+    console("  SD card ready: {d} sectors (~{d} MiB)\n", .{ g_card.sectorCount(), g_card.capacityBytes() >> 20 });
+    fatfs.bindCard(&g_card);
+    if (!fatfs.mountVolume()) {
+        console("  FAT32 mount failed: {s}\n", .{fatfs.lastError()});
         board.hw_result.fail();
-    };
-    g_fs.removeFile(pipe_file) catch {};
-    console("  flatfs volume formatted, {s} ready\n", .{pipe_file});
+    }
+    if (!fatfs.ensureTestsDir()) {
+        console("  mkdir tests failed: {s}\n", .{fatfs.lastError()});
+        board.hw_result.fail();
+    }
+    _ = fatfs.removeFile(pipe_file);
+    console("  FAT32 /tests ready, removed previous {s}\n", .{pipe_file});
 }
 
 fn sdAppend(text: []const u8) bool {
-    g_fs.appendFile(pipe_file, text) catch return false;
-    return true;
+    return fatfs.appendFile(pipe_file, text);
 }
 
+/// Up to `out.len` bytes of pipe.dat from `offset`; null only on an I/O
+/// error (0 bytes at the end of the file).
 fn sdReadFrom(offset: u32, out: []u8) ?usize {
-    return g_fs.readFileAt(pipe_file, offset, out) catch null;
+    const size = fatfs.fileSize(pipe_file) orelse return null;
+    if (offset >= size) return 0;
+    const want = @min(size - offset, out.len);
+    if (!fatfs.loadFileAt(pipe_file, offset, out[0..want])) return null;
+    return want;
 }
 
-/// Wait for a token, yielding meanwhile.
+/// Wait for a token, yielding (and now and then sleeping) meanwhile.
 fn acquire(sem: *rtos.Semaphore, yields: *Counter) bool {
     var retries: u32 = 0;
     while (!finished()) {
@@ -190,7 +205,7 @@ fn producerThread(arg: ?*anyopaque) ?*anyopaque {
         g_in_items.post() catch {};
 
         inc(&g_total_produced);
-        if (core < ncpu) inc(&g_prod_by_core[core]);
+        inc(&g_prod_by_core[core]);
         sysclock.sleepFor(30 + @as(u32, src_id) * 5) catch {};
     }
     return null;
@@ -219,7 +234,7 @@ fn workerThread(arg: ?*anyopaque) ?*anyopaque {
         local_count += 1;
         if ((local_count & 0x03) == 0) {
             inc(&g_yield_compute);
-            if (core < ncpu) inc(&g_yield_by_core[core]);
+            inc(&g_yield_by_core[core]);
             this_thread.yield();
         }
 
@@ -233,7 +248,7 @@ fn workerThread(arg: ?*anyopaque) ?*anyopaque {
         g_sd_items.post() catch {};
 
         inc(&g_total_processed);
-        if (core < ncpu) inc(&g_proc_by_core[core]);
+        inc(&g_proc_by_core[core]);
     }
     return null;
 }
@@ -277,6 +292,7 @@ fn sdWriterThread(_: ?*anyopaque) ?*anyopaque {
                     _ = g_total_written.fetchAdd(@intCast(batch_count), .monotonic);
                     g_audit_sem.post() catch {};
                 } else {
+                    // An append that fails is a test failure, never a silent drop.
                     _ = g_write_errors.fetchAdd(@intCast(batch_count), .monotonic);
                 }
             }
@@ -293,6 +309,7 @@ fn sdWriterThread(_: ?*anyopaque) ?*anyopaque {
 
 const Parsed = struct { core: u32, seq: u32, src: u32, t: u32, val: u32, crc: u32 };
 
+/// The C++ sscanf("[c%u] seq=%u src=%u t=%u val=%u crc=%x").
 fn parseRecord(line: []const u8) ?Parsed {
     var rest = line;
     const S = struct {
@@ -327,6 +344,7 @@ fn parseRecord(line: []const u8) ?Parsed {
 
 fn sdAuditorThread(_: ?*anyopaque) ?*anyopaque {
     var last_offset: u32 = 0;
+    // The highest sequence number seen per source (not a monotonic gate).
     var max_seq_by_src: [4]u32 = @splat(0);
     while (!finished()) {
         while (!finished()) {
@@ -336,7 +354,7 @@ fn sdAuditorThread(_: ?*anyopaque) ?*anyopaque {
         }
         if (finished()) break;
 
-        const base_offset = last_offset;
+        const base_offset = last_offset; // the file offset of g_read_buf[0]
         g_file_mtx.lock() catch {};
         const got = sdReadFrom(last_offset, &g_read_buf);
         g_file_mtx.unlock() catch {};
@@ -347,6 +365,10 @@ fn sdAuditorThread(_: ?*anyopaque) ?*anyopaque {
                 const nl = std.mem.indexOfScalarPos(u8, g_read_buf[0..chunk_len], p, '\n') orelse break;
                 if (parseRecord(g_read_buf[p..nl])) |r| {
                     if (r.src < 4) {
+                        // The two writers append in whichever order they win
+                        // the file mutex: a source's records may arrive out of
+                        // order by the SD queue depth plus two batches. Only a
+                        // record later than that is an error.
                         const reorder_window: u32 = sd_cap + 2 * 8;
                         if (r.seq > max_seq_by_src[r.src]) {
                             max_seq_by_src[r.src] = r.seq;
@@ -371,12 +393,14 @@ fn sdAuditorThread(_: ?*anyopaque) ?*anyopaque {
 // ---- 5. LED pacer, 6. telemetry ------------------------------------------------
 
 fn ledThread(_: ?*anyopaque) ?*anyopaque {
+    var state = false;
     while (!finished()) {
-        board.led.toggle();
+        state = !state;
+        board.led.set(state);
         sysclock.sleepFor(150) catch {};
         this_thread.yield();
     }
-    board.led.off();
+    board.led.set(true);
     return null;
 }
 
@@ -397,12 +421,12 @@ fn telemetryThread(_: ?*anyopaque) ?*anyopaque {
 // ---- Stacks and threads --------------------------------------------------------
 
 const El = uos.port.StackElement;
-var s_prod_stk: [4][2048]El = undefined;
-var s_work_stk: [4][2048]El = undefined;
-var s_wrt_stk: [2][2048]El = undefined;
-var s_aud_stk: [2048]El = undefined;
-var s_led_stk: [1024]El = undefined;
-var s_tel_stk: [2048]El = undefined;
+var s_prod_stk: [4][4096]El = undefined;
+var s_work_stk: [4][4096]El = undefined;
+var s_wrt_stk: [2][4096]El = undefined;
+var s_aud_stk: [4096]El = undefined;
+var s_led_stk: [2048]El = undefined;
+var s_tel_stk: [4096]El = undefined;
 var t_tel: rtos.Thread = undefined;
 var t_led: rtos.Thread = undefined;
 var t_aud: rtos.Thread = undefined;
@@ -424,8 +448,12 @@ fn osMain() void {
 
     _ = rtos.interrupts.UncriticalSection.enter();
     board.smp.startSecondaryCores();
-    const waited = board.smp.waitSecondaries(3000);
-    console("join: {s} ({d} ms)\n", .{ board.smp.joinSummary(), waited });
+    var waited: u32 = 0;
+    while ((board.smp.coreStage(1) < 3 or board.smp.coreStage(2) < 3 or board.smp.coreStage(3) < 3) and waited < 3000) {
+        sysclock.sleepFor(50) catch {};
+        waited += 50;
+    }
+    console("join: c1={d} c2={d} c3={d} ({d} ms)\n", .{ board.smp.coreStage(1), board.smp.coreStage(2), board.smp.coreStage(3), waited });
 
     const gpa = uos.memory.allocator();
     t_tel.init("telemetry", telemetryThread, null, .{ .stack = &s_tel_stk, .priority = rtos.priority.high }, gpa) catch unreachable;

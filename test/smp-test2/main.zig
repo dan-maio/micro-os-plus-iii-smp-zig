@@ -1,7 +1,11 @@
-//! smp-test2 -- Kernel lock coherency on every CPU (Raspberry Pi 4 B).
+//! smp-test2 -- kernel lock coherency on every CPU (the C++
+//! test/rpi4b/smp_test2).
 //!
-//! One worker per CPU (4 cores), pinned to it, increments a shared counter
-//! `iter` times under a mutex; PASS when exactly (iter * 4) updates are recorded.
+//! One worker per CPU, pinned to it, increments a shared counter ITER times
+//! under one mutex; PASS when no update was lost.
+//!
+//! Differences from C++: the kernel prints its startup banner and creates
+//! the secondary idle threads; the affinities are given at creation.
 
 const std = @import("std");
 const uos = @import("uos");
@@ -25,7 +29,7 @@ fn worker(_: ?*anyopaque) ?*anyopaque {
         g_mutex.lock() catch {};
         const v = @as(*volatile u32, &g_counter).*;
         asm volatile ("" ::: .{ .memory = true });
-        @as(*volatile u32, &g_counter).* = v + 1; // read-modify-write under lock
+        @as(*volatile u32, &g_counter).* = v + 1; // read-modify-write under the lock
         g_mutex.unlock() catch {};
         const me = uos.port.scheduler.cpuId();
         if (me < ncpu) @as(*volatile u32, &g_prog[me]).* = i;
@@ -70,7 +74,7 @@ fn osMain() void {
     while (g_done.load(.monotonic) < ncpu) {
         sysclock.sleepFor(500) catch {};
         var buf: [256]u8 = undefined;
-        var w = std.Io.Writer.fixed(&buf);
+        var w: std.Io.Writer = .fixed(&buf);
         w.writeAll("progress:") catch {};
         for (0..ncpu) |c| w.print(" {s}={d}", .{ &wn[c], @as(*volatile u32, &g_prog[c]).* }) catch {};
         w.print(" done={d} counter={d}\n", .{ g_done.load(.monotonic), @as(*volatile u32, &g_counter).* }) catch {};

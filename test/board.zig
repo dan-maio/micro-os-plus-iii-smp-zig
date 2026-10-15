@@ -15,6 +15,8 @@ pub fn options(ncpu: u8) uos.Options {
         .idle_stack_size_bytes = 16 * 1024,
         .min_stack_size_bytes = 2048,
         .dynamic_memory_size_bytes = 8 * 1024 * 1024,
+        // memcpy() & co. for the C sources (FatFs).
+        .c_runtime = true,
     };
 }
 
@@ -99,13 +101,13 @@ pub fn cpuSlot() u32 {
 
 pub const mmu = uos.port.mmu;
 
+/// The verdict: a semihosting SYS_EXIT (the test printed its RESULT line
+/// on the console, mirrored to semihosting).
 pub const hw_result = struct {
     pub fn ok() noreturn {
-        uos.port.semihosting.write0("\nRESULT: PASS\n");
         uos.port.terminate(0);
     }
     pub fn fail() noreturn {
-        uos.port.semihosting.write0("\nRESULT: FAIL\n");
         uos.port.terminate(1);
     }
 };

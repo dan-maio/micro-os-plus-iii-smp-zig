@@ -1,8 +1,16 @@
-//! smp-test3 -- Message Queue producer/consumer across 4 CPUs (Raspberry Pi 4 B).
+//! smp-test3 -- message queue producer/consumer across CPUs (the C++
+//! test/rpi4b/smp_test3).
 //!
-//! Producer (Core 0) sends integers every 20 ms; Consumer (Core 1) classifies
-//! primes and toggles the ACT LED; Logger (Core 2) prints status every second.
-//! PASS when every secondary joined and messages were consumed.
+//! The producer (CPU 0) sends 2, 3, 4, ... every 20 ms; the consumer (CPU 1)
+//! classifies each as prime or composite and toggles the LED on primes; the
+//! logger (CPU 2) prints the counters every second. After ten seconds: PASS
+//! when every secondary joined and messages were consumed. As the rpi4b
+//! C++ (not the native one): the threads stop (`g_running`) and the RESULT
+//! line is printed under the print mutex.
+//!
+//! Differences from C++: the kernel prints its startup banner and creates
+//! the secondary idle threads; the affinities are given at creation; the
+//! queue is created at the start of main (a C++ static constructor).
 
 const std = @import("std");
 const uos = @import("uos");
@@ -14,12 +22,17 @@ const sysclock = rtos.sysclock;
 
 pub const uos_options = board.options(4);
 
-var g_mq: rtos.MessageQueue = .{};
-var g_print: rtos.Mutex = .{ .name = "print" };
+var g_mq: rtos.MessageQueue = .{}; // "mq", 8 x sizeof(void*)
+var g_print: rtos.Mutex = .{ .name = "print" }; // serialises the console
 var g_produced = std.atomic.Value(u32).init(0);
 var g_consumed = std.atomic.Value(u32).init(0);
 var g_primes = std.atomic.Value(u32).init(0);
 var g_beats = std.atomic.Value(u32).init(0);
+var g_running = std.atomic.Value(bool).init(true);
+
+fn running() bool {
+    return g_running.load(.monotonic);
+}
 
 fn isPrime(n: u32) bool {
     if (n < 2) return false;
@@ -34,18 +47,19 @@ fn cpuId() u32 {
 
 fn producer(_: ?*anyopaque) ?*anyopaque {
     var v: u32 = 2;
-    while (true) {
+    while (running()) {
         g_mq.send(std.mem.asBytes(&v), 0) catch {};
         _ = g_produced.fetchAdd(1, .monotonic);
         v += 1;
         sysclock.sleepFor(20) catch {};
     }
+    return null;
 }
 
 fn consumer(_: ?*anyopaque) ?*anyopaque {
     var v: u32 = undefined;
     var led_state = false;
-    while (true) {
+    while (running()) {
         if (g_mq.receive(std.mem.asBytes(&v))) |_| {
             _ = g_consumed.fetchAdd(1, .monotonic);
             const p = isPrime(v);
@@ -54,26 +68,32 @@ fn consumer(_: ?*anyopaque) ?*anyopaque {
                 led_state = !led_state;
                 led.set(led_state);
             }
-            g_print.lock() catch {};
-            uart.print("[c{d}] recv {d}{s}", .{ cpuId(), v, if (p) " PRIME\n" else " composite\n" });
-            g_print.unlock() catch {};
+            if (running()) {
+                g_print.lock() catch {};
+                uart.print("[c{d}] recv {d}{s}", .{ cpuId(), v, if (p) " PRIME\n" else " composite\n" });
+                g_print.unlock() catch {};
+            }
         } else |_| {}
     }
+    return null;
 }
 
 fn logger(_: ?*anyopaque) ?*anyopaque {
-    while (true) {
-        g_print.lock() catch {};
-        uart.print("[c{d}] produced={d} consumed={d} primes={d} t={d}ms\n", .{
-            cpuId(),
-            g_produced.load(.monotonic),
-            g_consumed.load(.monotonic),
-            g_primes.load(.monotonic),
-            @as(u32, @truncate(sysclock.now())),
-        });
-        g_print.unlock() catch {};
+    while (running()) {
+        if (running()) {
+            g_print.lock() catch {};
+            uart.print("[c{d}] produced={d} consumed={d} primes={d} t={d}ms\n", .{
+                cpuId(),
+                g_produced.load(.monotonic),
+                g_consumed.load(.monotonic),
+                g_primes.load(.monotonic),
+                @as(u32, @truncate(sysclock.now())),
+            });
+            g_print.unlock() catch {};
+        }
         sysclock.sleepFor(1000) catch {};
     }
+    return null;
 }
 
 var s_prod: [4096]uos.port.StackElement = undefined;
@@ -99,16 +119,24 @@ fn osMain() void {
     const waited = board.smp.waitSecondaries(3000);
     uart.print("join: {s} ({d}ms)\n", .{ board.smp.joinSummary(), waited });
 
+    // As in C++, the 4096-element stacks are not above the port's minimum:
+    // the kernel allocates default ones.
     t_prod.init("producer", producer, null, .{ .stack = &s_prod, .cpu_affinity = 1 << 0 }, gpa) catch unreachable;
     t_cons.init("consumer", consumer, null, .{ .stack = &s_cons, .cpu_affinity = 1 << 1 }, gpa) catch unreachable;
     t_log.init("logger", logger, null, .{ .stack = &s_log, .cpu_affinity = 1 << 2 }, gpa) catch unreachable;
 
+    // Exactly 10 one-second beats, then the self-check.
     var b: u32 = 1;
     while (b <= 10) : (b += 1) {
         sysclock.sleepFor(1000) catch {};
         g_beats.store(b, .monotonic);
     }
     const ok = board.smp.secondariesJoined() and g_consumed.load(.monotonic) > 0;
+    g_running.store(false, .monotonic);
+    sysclock.sleepFor(50) catch {};
+    // Under the print mutex: a single line.
+    g_print.lock() catch {};
     uart.puts(if (ok) "\nRESULT: PASS\n" else "\nRESULT: FAIL\n");
+    g_print.unlock() catch {};
     if (ok) board.hw_result.ok() else board.hw_result.fail();
 }

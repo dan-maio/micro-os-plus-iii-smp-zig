@@ -9,7 +9,7 @@ pub const banner_long = "Raspberry Pi 4 B";
 pub const banner_short = "RPi 4 B";
 pub const banner_cpu = "BCM2711 (4x Cortex-A72, AArch64)";
 pub const banner_isa = "AArch64";
-pub const port_greeting = "µOS++ Raspberry Pi 4 B (BCM2711, Cortex-A72 SMP)";
+pub const port_greeting = "µOS++ Raspberry Pi 4 B (BCM2711, 4x Cortex-A72 SMP, AArch64/EL1, GIC-400, 1ms Tick, LDAXR lock)";
 
 /// Maximum number of CPUs in the BCM2711 cluster.
 pub const ncpu = 4;

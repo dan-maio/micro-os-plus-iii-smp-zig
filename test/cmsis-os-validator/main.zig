@@ -12,8 +12,10 @@ const board = @import("board");
 const gic_mod = uos.port.gic_mod;
 
 pub const uos_options: uos.Options = blk: {
-    var o = board.options(1);
-    o.main_stack_size_bytes = 16384;
+    // As the C++ rpi4b harness build: the board's 4 CPUs, an 8192-element
+    // main stack.
+    var o = board.options(4);
+    o.main_stack_size_bytes = 8192 * @sizeOf(uos.port.StackElement);
     o.c_api = true;
     o.cmsis_os = true;
     o.c_runtime = true;
@@ -61,7 +63,14 @@ pub fn main() void {
     uos.rtos.run(osMain);
 }
 
+/// The C++ rpi4b harness platform: CPUs 1..3 released before the suite.
+fn bringUpSecondaries() void {
+    board.smp.startSecondaryCores();
+    _ = board.smp.waitSecondaries(3000);
+}
+
 fn osMain() void {
+    bringUpSecondaries();
     // Pin main thread to core 0 as CMSIS-RTOS assumes single-core priority preemption
     uos.rtos.this_thread.thread().setCpuAffinity(1 << 0);
     uos.rtos.this_thread.yield();

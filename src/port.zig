@@ -266,7 +266,8 @@ pub const scheduler = struct {
     }
 
     pub fn greeting(w: *std.Io.Writer) std.Io.Writer.Error!void {
-        try w.print("Scheduler: {s}, {d} CPU(s), 1ms tick, GIC-400\n", .{ board.port_greeting, ncpu });
+        // The C++ port prints this line as it is (os-inlines.h).
+        try w.print("Scheduler: {s}\n", .{board.port_greeting});
     }
 
     pub fn start() noreturn {
@@ -502,7 +503,7 @@ pub const clock_highres = struct {
 pub const trace = struct {
     pub fn write(bytes: []const u8) void {
         board.uartWrite(bytes);
-        // semihosting.mirror(bytes);
+        semihosting.mirror(bytes);
     }
 };
 
@@ -522,8 +523,12 @@ pub fn startSecondaryCpus() void {
     }.log);
 }
 
+/// End the run with a verdict: IRQs masked, the semihosting line and the
+/// UART drained, then a semihosting SYS_EXIT.
 pub fn terminate(code: u8) noreturn {
+    arch.disableIrq();
     semihosting.flush();
+    board.uartFlush();
     semihosting.exit(code);
 }
 

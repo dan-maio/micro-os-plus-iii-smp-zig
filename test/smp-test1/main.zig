@@ -1,8 +1,14 @@
-//! smp-test1 -- Semaphore ping-pong across 4 Cortex-A72 cores + LED (Raspberry Pi 4 B).
+//! smp-test1 -- semaphore ping-pong across CPUs (the C++ test/rpi4b/smp_test1).
 //!
-//! "ping" on Core 0 and "pong" on Core 1 hand two binary semaphores back and
-//! forth; "logger" on Core 2 toggles the ACT LED and reports the round count
-//! every second. After 10 seconds: PASS when every secondary joined and rounds advanced.
+//! "ping" on CPU 0 and "pong" on CPU 1 hand two binary semaphores back and
+//! forth; "logger" on CPU 2 toggles the LED and prints the rounds every
+//! second. After ten seconds: PASS when every secondary joined and the
+//! rounds advanced.
+//!
+//! Differences from C++: the kernel prints its startup banner and creates
+//! the secondary idle threads itself (no `smp_install_boot_threads()`); the
+//! affinities are given at creation (C++ sets them after construction, so
+//! its logger's first line comes from c0).
 
 const std = @import("std");
 const uos = @import("uos");
@@ -82,7 +88,7 @@ fn osMain() void {
     t_pong.init("pong", ponger, null, .{ .stack = &s_pong, .cpu_affinity = 1 << 1 }, gpa) catch unreachable;
     t_log.init("logger", logger, null, .{ .stack = &s_log, .cpu_affinity = 1 << 2 }, gpa) catch unreachable;
 
-    // 10 one-second beats
+    // Exactly 10 one-second beats, then the self-check.
     const check_beats = 10;
     for (0..check_beats) |_| sysclock.sleepFor(1000) catch {};
 

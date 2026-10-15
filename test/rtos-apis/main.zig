@@ -2,7 +2,8 @@
 //! (the C++ test/rpi4b/rtos-apis: the kernel's suite tests/sources/rtos-apis).
 //!
 //! The parts run in the same order and the first one that fails stops the
-//! run; then the RESULT line and hw_result:
+//! run; then the RESULT line and hw_result. As the C++ rpi4b harness build:
+//! 4 CPUs (1..3 released first), an 8192-element main stack:
 //!
 //!   test_cpp_api       test-cpp-api.zig, the Zig RTOS API
 //!   test_c_api         the original test-c-api.c, on the kernel's C API
@@ -19,8 +20,10 @@ const iso_api = @import("test-iso-api.zig");
 const posix_io_api = @import("test-posix-io-api.zig");
 
 pub const uos_options: uos.Options = blk: {
-    var o = board.options(1); // Single-core execution
-    o.main_stack_size_bytes = 16384;
+    // As the C++ rpi4b harness build: the board's 4 CPUs, an 8192-element
+    // main stack.
+    var o = board.options(4);
+    o.main_stack_size_bytes = 8192 * @sizeOf(uos.port.StackElement);
     o.statistics_context_switches = true;
     o.statistics_cpu_cycles = true;
     o.c_api = true;
@@ -37,7 +40,16 @@ pub fn main() void {
 
 const printf = board.uart.print;
 
+/// The C++ rpi4b harness platform (tests/platforms/aarch64-rpi4b/src/
+/// platform-support.cpp): the suite runs on all four CPUs, so CPUs 1..3 are
+/// released (and waited for) before it starts.
+fn bringUpSecondaries() void {
+    board.smp.startSecondaryCores();
+    _ = board.smp.waitSecondaries(3000);
+}
+
 fn osMain() void {
+    bringUpSecondaries();
     printf("\n", .{});
     printf("µOS++ RTOS simple APIs test\n", .{});
     printf("Built with Zig {s}\n", .{builtin.zig_version_string});
@@ -65,14 +77,6 @@ fn osMain() void {
     if (ret == 0) {
         ret = posix_io_api.run(false);
         printf("ret={d}\n", .{ret});
-    }
-
-    if (ret == 0) {
-        printf("All API checks passed. Running 20s soak verification...\n", .{});
-        for (1..21) |s| {
-            uos.rtos.sysclock.sleepFor(1000) catch {};
-            printf("  soak: {d}/20 seconds...\n", .{s});
-        }
     }
 
     printf("done\n", .{});

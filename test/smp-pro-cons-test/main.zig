@@ -9,6 +9,10 @@
 //! raised by a periodic timer. After RUN_MS (4 s) the pipeline stops; PASS
 //! when data flowed on every CPU, no CRC failed, the pool did not leak, and
 //! every mechanism ran.
+//!
+//! Differences from C++: the kernel prints its startup banner and creates
+//! the secondary idle threads; the affinities are given at creation. The
+//! 4096-byte stacks are used as given (above the port's 2 KiB minimum).
 
 const std = @import("std");
 const uos = @import("uos");
@@ -21,10 +25,14 @@ const console = board.console;
 
 pub const uos_options = board.options(4);
 
-const run_ms: u32 = 20000;
+const run_ms: u32 = 4000;
 
 fn ledToggle() void {
-    board.led.toggle();
+    const S = struct {
+        var state = false;
+    };
+    S.state = !S.state;
+    board.led.set(S.state);
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +316,7 @@ pub fn main() void {
     rtos.run(osMain);
 }
 
-const worker_stack_size = 16384;
+const worker_stack_size = 4096;
 const Stack = [worker_stack_size / @sizeOf(uos.port.StackElement)]uos.port.StackElement;
 var s_prod_stacks: [4]Stack = undefined;
 var s_cons_stacks: [4]Stack = undefined;

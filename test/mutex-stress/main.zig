@@ -5,7 +5,8 @@
 //! the mutex and, inside, busy 1..9 µs and sleep 1..20 ticks and count. A
 //! thread "P" (above normal) prints the counts and their spread every 5 s,
 //! and after `seconds` interrupts and joins the ten threads. main() joins P,
-//! prints "Done." and the verdict.
+//! prints "Done." and the verdict. As the C++ rpi4b harness build: 4 CPUs
+//! (1..3 released first), an 8192-element main stack, 30 s.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -15,7 +16,13 @@ const rtos = uos.rtos;
 const sysclock = rtos.sysclock;
 const hrclock = rtos.hrclock;
 
-pub const uos_options = board.options(1);
+/// As the C++ rpi4b harness build: the board's 4 CPUs, an 8192-element
+/// main stack.
+pub const uos_options: uos.Options = blk: {
+    var o = board.options(4);
+    o.main_stack_size_bytes = 8192 * @sizeOf(uos.port.StackElement);
+    break :blk o;
+};
 
 pub fn main() void {
     board.uart.init();
@@ -23,6 +30,14 @@ pub fn main() void {
 }
 
 const printf = board.uart.print;
+
+/// The C++ rpi4b harness platform (tests/platforms/aarch64-rpi4b/src/
+/// platform-support.cpp): the suite runs on all four CPUs, so CPUs 1..3 are
+/// released (and waited for) before it starts.
+fn bringUpSecondaries() void {
+    board.smp.startSecondaryCores();
+    _ = board.smp.waitSecondaries(3000);
+}
 
 // ---- newlib rand() / srand() -----------------------------------------------
 
@@ -50,7 +65,8 @@ fn busyWait(micros: u32) void {
 }
 
 fn osMain() void {
-    const seconds: u32 = 20; // RUN_SECONDS
+    bringUpSecondaries();
+    const seconds: u32 = 30; // the suite's default (the board passes no argument)
 
     printf("\nMutex stress & uniformity test\n", .{});
     printf("Built with Zig {s}\n", .{builtin.zig_version_string});

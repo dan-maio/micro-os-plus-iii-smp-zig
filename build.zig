@@ -78,7 +78,7 @@ const tests = [_]Test{
         .c_flags = &.{ "-std=gnu11", "-DTRACE", "-DOS_USE_OS_APP_CONFIG_H" },
         .cmsis_rv = true,
     },
-    .{ .name = "sd-test", .devices = true },
+    .{ .name = "sd_test", .devices = true },
     .{ .name = "smp-num-test", .devices = true },
     .{ .name = "smp-mem-test" },
     .{ .name = "smp-mem-inter-test" },
@@ -208,16 +208,28 @@ pub fn addFirmware(
         },
     });
 
+    // The SD card (EMMC2) and FatFs on its existing FAT32 volume, as the C++
+    // HW_BUILD tests: FatFs R0.15a is the C ff.c, unchanged, over the
+    // kernel's freestanding C runtime (uos_options.c_runtime).
+    var ff_mod: ?*std.Build.Module = null;
     if (options.test_def.devices) {
-        const sd_mod = b.createModule(.{ .root_source_file = b.path("drivers/sd.zig") });
-        sd_mod.addImport("uos", uos_mod);
+        const ff_c = b.addTranslateC(.{
+            .root_source_file = b.path("drivers/ff_api.h"),
+            .target = options.target,
+            .optimize = options.optimize,
+            .link_libc = false,
+        });
+        ff_c.addIncludePath(b.path("drivers/fatfs"));
+        ff_c.addIncludePath(kernel_dep.path("include/c"));
+        ff_mod = ff_c.createModule();
 
-        const flatfs_mod = b.createModule(.{ .root_source_file = b.path("drivers/flatfs.zig") });
-        flatfs_mod.addImport("sd", sd_mod);
-        flatfs_mod.addImport("uos", uos_mod);
+        const sd_mod = b.createModule(.{ .root_source_file = b.path("drivers/sd.zig") });
+        const fatfs_mod = b.createModule(.{ .root_source_file = b.path("drivers/fatfs.zig") });
+        fatfs_mod.addImport("sd", sd_mod);
+        fatfs_mod.addImport("ff", ff_mod.?);
 
         app_mod.addImport("sd", sd_mod);
-        app_mod.addImport("flatfs", flatfs_mod);
+        app_mod.addImport("fatfs", fatfs_mod);
     }
 
     const root_mod = b.createModule(.{
@@ -231,6 +243,11 @@ pub fn addFirmware(
         },
     });
     root_mod.addAssemblyFile(b.path(b.fmt("{s}/startup.S", .{board_dir})));
+    if (ff_mod != null) {
+        root_mod.addIncludePath(b.path("drivers/fatfs"));
+        root_mod.addIncludePath(kernel_dep.path("include/c"));
+        root_mod.addCSourceFiles(.{ .files = &.{"drivers/fatfs/ff.c"}, .flags = &.{"-std=c11"} });
+    }
 
     if (options.test_def.c_sources.len > 0 or options.test_def.cmsis_rv) {
         uos_build.addCIncludes(kernel_dep, root_mod, true);
