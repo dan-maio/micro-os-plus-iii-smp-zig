@@ -24,6 +24,8 @@ pub fn options(ncpu: u8) uos.Options {
         .idle_stack_size_bytes = 16 * 1024,
         .min_stack_size_bytes = 2048,
         .dynamic_memory_size_bytes = 0,
+        // memcpy() & co. for the C sources (FatFs).
+        .c_runtime = true,
     };
 }
 

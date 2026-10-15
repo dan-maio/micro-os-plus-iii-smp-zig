@@ -32,6 +32,9 @@ const boards = [_]Board{
 /// `uos_options` (the CPU count among them).
 const Test = struct {
     name: []const u8,
+    /// Also import the board's storage drivers (drivers/): `sd` (the SD
+    /// card) and `fatfs` (FatFs on its FAT32 partition, the C ff.c).
+    devices: bool = false,
 };
 
 const tests = [_]Test{
@@ -42,6 +45,7 @@ const tests = [_]Test{
     .{ .name = "smp-test4" },
     .{ .name = "smp-mat-test" },
     .{ .name = "smp-pro-cons-test" },
+    .{ .name = "smp-num-test", .devices = true },
 };
 
 pub fn build(b: *std.Build) void {
@@ -74,6 +78,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .app_source_file = b.path(b.fmt("test/{s}/main.zig", .{t.name})),
+            .devices = t.devices,
         });
 
         const install = b.addInstallArtifact(exe, .{
@@ -100,6 +105,8 @@ pub const FirmwareOptions = struct {
     /// The application: a `main.zig` that declares `uos_options` and
     /// `main()`; it imports `uos`, `uos_suites` and the test board `board`.
     app_source_file: std.Build.LazyPath,
+    /// Link the storage drivers (`sd`, `fatfs`) and FatFs (ff.c).
+    devices: bool = false,
 };
 
 /// Build a µOS++ image for a board: the kernel, this port, the board
@@ -143,6 +150,29 @@ pub fn addFirmware(b: *std.Build, kernel_dep: *std.Build.Dependency, options: Fi
         },
     });
     root_mod.addAssemblyFile(b.path(b.fmt("{s}/startup.S", .{board_dir})));
+
+    if (options.devices) {
+        // FatFs R0.15a, the C sources unchanged, over the kernel's
+        // freestanding C runtime (uos_options.c_runtime).
+        const ff_c = b.addTranslateC(.{
+            .root_source_file = b.path("drivers/ff_api.h"),
+            .target = options.target,
+            .optimize = options.optimize,
+            .link_libc = false,
+        });
+        ff_c.addIncludePath(b.path("drivers/fatfs"));
+        ff_c.addIncludePath(kernel_dep.path("include/c"));
+        root_mod.addIncludePath(b.path("drivers/fatfs"));
+        root_mod.addIncludePath(kernel_dep.path("include/c"));
+        root_mod.addCSourceFiles(.{ .files = &.{"drivers/fatfs/ff.c"}, .flags = &.{"-std=c11"} });
+
+        const sd = b.createModule(.{ .root_source_file = b.path("drivers/sd.zig") });
+        const fatfs = b.createModule(.{ .root_source_file = b.path("drivers/fatfs.zig") });
+        fatfs.addImport("sd", sd);
+        fatfs.addImport("ff", ff_c.createModule());
+        app_mod.addImport("sd", sd);
+        app_mod.addImport("fatfs", fatfs);
+    }
 
     const exe = b.addExecutable(.{
         .name = options.name,
