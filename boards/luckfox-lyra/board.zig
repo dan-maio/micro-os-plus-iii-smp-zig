@@ -158,25 +158,26 @@ pub const led = struct {
 /// Release CPUs 1 and 2: the BootROM's SRAM mailbox gets the entry point
 /// and the magic word, then their resets are released and an event sent.
 /// They enter `_start` (startup.S), which sends them to `boot_core1/2`.
-pub fn releaseSecondaries() void {
-    uartWrite("Core 0: setting up SRAM mailbox...\n");
+/// `log` is the console (`uart::uart1`, mirrored to semihosting).
+pub fn releaseSecondaries(log: *const fn ([]const u8) void) void {
+    log("Core 0: setting up SRAM mailbox...\n");
     reg(mailbox.TARGET).* = ram_base;
     reg(mailbox.MAGIC).* = mailbox.magic_value;
     dsb();
 
-    uartWrite("Core 0: releasing core 1...\n");
+    log("Core 0: releasing core 1...\n");
     writeMasked(cru.SOFTRST_CON00, cru.core1_resets, 0);
     dsb();
     isb();
     asm volatile ("sev" ::: .{ .memory = true });
 
-    uartWrite("Core 0: releasing core 2...\n");
+    log("Core 0: releasing core 2...\n");
     writeMasked(cru.SOFTRST_CON00, cru.core2_resets, 0);
     dsb();
     isb();
     asm volatile ("sev" ::: .{ .memory = true });
 
-    uartWrite("Core 0: secondary-core startup signals sent.\n");
+    log("Core 0: secondary-core startup signals sent.\n");
 }
 
 // ---- The MMU (mmu.cpp) ---------------------------------------------------

@@ -545,7 +545,7 @@ export fn boot_core2() callconv(.c) noreturn {
 
 /// Release CPUs 1..ncpu-1 (`smp::start_secondary_cores()`).
 pub fn startSecondaryCpus() void {
-    board.releaseSecondaries();
+    board.releaseSecondaries(trace.write);
 }
 
 // ----------------------------------------------------------------------------

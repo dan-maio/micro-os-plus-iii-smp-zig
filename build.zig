@@ -36,6 +36,7 @@ const Test = struct {
 
 const tests = [_]Test{
     .{ .name = "smp-test0" },
+    .{ .name = "smp-test1" },
 };
 
 pub fn build(b: *std.Build) void {
