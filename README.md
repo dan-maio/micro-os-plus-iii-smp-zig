@@ -10,8 +10,9 @@ also needs exactly one architecture port, a sibling repository:
 
 ```text
 micro-os-plu-iii-smp-zig-pr-github/
-├── micro-os-plus-iii/            ← this repository (the kernel, module `uos`)
-└── micro-os-plus-iii-cortexm/    ← the Cortex-M port (Pico 2, WeAct F411, ...)
+├── micro-os-plus-iii/              ← this repository (the kernel, module `uos`)
+├── micro-os-plus-iii-cortexm/      ← the Cortex-M port (Pico 2, WeAct F411, ...)
+└── micro-os-plus-iii-posix-arch/   ← the synthetic POSIX port (GNU/Linux host)
 ```
 
 ## What is in it
@@ -65,7 +66,9 @@ convert their arguments and call the Zig objects.
   `os_mutex_t`, ...) are opaque storage sized for the Zig objects. C code
   allocates them and passes pointers; it never reads their members. The
   sizes are in `src/c_storage.zig` too: the build fails when a Zig object
-  outgrows its storage, and a host test fails when the header disagrees.
+  outgrows its storage, and a host test fails when the header disagrees. A
+  port may raise them (`cmsis-plus/rtos/port/os-c-storage.h` and
+  `c_storage_words` in its module; the POSIX port does, for its ucontexts).
 - Not available: `os_thread_get_user_storage()` and the C startup hooks
   (`os-hooks.h`); `os_thread_attr_t.th_cpu_affinity` is always present.
 
@@ -73,17 +76,169 @@ The original `test-c-api.c` of the C++ rtos-apis suite and the Arm
 CMSIS-RTOS validator (60/60) run this way on the boards; see the Cortex-M
 port.
 
-## Building and testing
+## Running the tests
+
+There are three levels: the host unit tests of this repository, and the
+test applications of each port, on the boards or on the host.
+
+### The kernel's host unit tests
 
 ```sh
-zig build test      # host unit tests of the port-independent parts
+cd micro-os-plus-iii
+zig build test                  # lists, flags, allocators, C storage sizes
+zig build test --summary all    # the same, with the count of tests
 ```
 
-The kernel itself is tested through a port, on the boards; see
-`micro-os-plus-iii-cortexm/README.md`.
+### On the boards (the Cortex-M port)
 
-A port uses `createModule()` (the `uos` module, wired to the port),
-`createSuitesModule()` and `addCIncludes()` from `build.zig`.
+```sh
+cd micro-os-plus-iii-cortexm
+zig build -Dboard=pico2                              # build every test of a board
+test/run-all.sh pico2                                # run all of them, one after the other
+zig build run -Dboard=pico2 -Dtest=smp-test2         # build one test, and run it
+bash test/hw.sh weactf411 zig-out/firmware/weactf411/rtos-apis.elf 120   # run an image
+```
+
+`-Dboard` is `pico2`, `weactf411` (tested), `nucleof411`, `weactf412` or
+`pico` (built only); `-Dtest=<name>` builds that test only. The runner
+programs the board with OpenOCD and follows the semihosting output until
+`RESULT: PASS` or `RESULT: FAIL`; the logs are in
+`zig-out/hw-logs/<board>/<test>.log`. The UART carries the same output, for
+a terminal. Reset the Pico 2 between tests (it keeps USB and SIO state
+across a debugger reset).
+
+### On the host (the POSIX port)
+
+```sh
+cd micro-os-plus-iii-posix-arch
+zig build                                 # build every test
+test/run-all.sh                           # run all of them, with a verdict table
+test/run-all.sh smp-test1 flatfs-test     # run some of them
+./zig-out/bin/smp-test1                   # run one directly
+zig build run -Dtest=smp-test1            # build only that one, and run it
+```
+
+A host test's verdict is its exit code. See each port's README for the list
+of tests and their C++ origin.
+
+## Adding a new architecture
+
+A port is a separate repository (`micro-os-plus-iii-<arch>`), as in C++. It
+provides one Zig module, imported by the kernel as `uos_port`, which declares
+what `src/port_contract.zig` lists; the kernel checks it at compile time and
+names any missing piece. The scheduler, the threads, the lists and the
+synchronisation objects stay the kernel's.
+
+### 1. The package
+
+`build.zig.zon` depends on this repository:
+
+```zig
+.dependencies = .{
+    .micro_os_plus_iii = .{ .path = "../micro-os-plus-iii" },
+},
+```
+
+and `build.zig` wires the two modules together with this repository's
+helpers:
+
+```zig
+const uos_build = @import("micro_os_plus_iii");
+
+const kernel_dep = b.dependency("micro_os_plus_iii", .{});
+const port_mod = b.createModule(.{ .root_source_file = b.path("src/port.zig"), ... });
+const uos_mod = uos_build.createModule(b, kernel_dep, .{
+    .target = target,
+    .optimize = optimize,
+    .port = port_mod,                     // linkPort(): uos <-> uos_port
+});
+exe.root_module.addImport("uos", uos_mod);
+// Optional: the shared test suites, and the C headers for C sources.
+exe.root_module.addImport("uos_suites", uos_build.createSuitesModule(b, kernel_dep, uos_mod));
+uos_build.addCIncludes(kernel_dep, exe.root_module, freestanding);
+```
+
+### 2. The port module
+
+```zig
+const uos = @import("uos");
+
+// Stacks and contexts.
+pub const StackElement = u32;                // the stack word
+pub const stack_alignment: usize = 8;
+pub const Context = struct {
+    // The saved stack pointer; null while the context is live in a CPU
+    // (the SMP scheduler never picks a thread whose stack_ptr is null).
+    stack_ptr: ?[*]StackElement = null,
+};
+pub fn contextCreate(ctx: *Context, stack: []StackElement,
+    entry: *const fn (?*anyopaque) callconv(.c) noreturn, arg: ?*anyopaque) void { ... }
+
+pub const interrupts = struct {
+    pub const State = u32;                   // whatever the masks need
+    pub fn criticalEnter() State { ... }     // mask (and, on SMP, take the kernel lock)
+    pub fn criticalExit(state: State) void { ... }
+    pub fn uncriticalEnter() State { ... }
+    pub fn uncriticalExit(state: State) void { ... }
+    pub fn inHandlerMode() bool { ... }
+    pub fn isPriorityValid() bool { ... }    // may this interrupt call the RTOS?
+};
+
+pub const scheduler = struct {
+    pub fn initialize() void { ... }         // the hardware up, interrupts masked
+    pub fn start() noreturn { ... }          // internalPrepareCpu(0), tick, first switch
+    pub fn setLocked(locked: bool) bool { ... }
+    pub fn isLocked() bool { ... }
+    pub fn reschedule() void { ... }         // request a context switch (PendSV, ...)
+    pub fn waitForInterrupt() void { ... }   // WFI, sigsuspend(), ...
+    pub fn cpuId() u32 { ... }               // 0 on a single-CPU build
+    pub fn ipi(cpu: u32) void { ... }        // cross-CPU reschedule request
+    pub fn prepareSuspend() void {}
+    pub fn greeting(w: *std.Io.Writer) std.Io.Writer.Error!void { ... }
+};
+
+pub const clock_systick = struct { pub fn start() void { ... } };
+pub const clock_highres = struct { ... };    // see port_contract.zig
+pub const trace = struct { pub fn write(bytes: []const u8) void { ... } };
+
+// Optional: terminate(code), freeRam(), interruptStack(), stack_magic,
+// c_storage_words, a port Options struct (root `uos_port_options`).
+```
+
+The two duties that matter most:
+
+- **The context switch** saves the outgoing context, calls
+  `uos.rtos.scheduler.internalSwitchThreads()` with the interrupts masked
+  (and the kernel lock held, on SMP), and restores
+  `scheduler.current_thread[cpu]`. On SMP it publishes the outgoing
+  `stack_ptr` only once the context is fully saved, and clears the incoming
+  one before it resumes it (the Cortex-M port in PendSV, the POSIX port after
+  `swapcontext()`).
+- **The tick** calls `uos.rtos.clocks.sysTickHandler()` (on CPU 0 only, on
+  SMP); the kernel then asks for a reschedule.
+
+Bring up the other CPUs of an SMP target from the port (or let the
+application do it, as `launchCore1()` and `startSecondaryCpus()`): each makes
+its boot pseudo-thread current with
+`uos.rtos.scheduler.internalPrepareCpu(cpu)`, starts its tick and asks for
+its first switch.
+
+### 3. The order of work
+
+1. A port that builds: `zig build` fails with a message naming each missing
+   piece of the contract until the module is complete.
+2. `smp-test0`: the trace, the tick, one thread sleeping (10 heartbeats).
+3. Two threads and a context switch in each direction (`smp-test1`).
+4. The harness suites: `rtos-apis` (every object, the C API), `mutex-stress`,
+   `fp-switch` on an FPU, `cmsis-os-validator`.
+5. On SMP: the other CPUs, the IPI, then `smp-test2`..`smp-test4` and the
+   stress tests.
+
+The Cortex-M port (`micro-os-plus-iii-cortexm/src/port.zig`) and the POSIX
+port (`micro-os-plus-iii-posix-arch/src/port.zig`) are the two worked
+examples: hardware registers and assembly in one, signals and ucontexts in
+the other, behind the same contract. `docs/aarch32-aarch64-smp-amp-porting-guide.md`
+discusses further targets.
 
 ## Licence
 
