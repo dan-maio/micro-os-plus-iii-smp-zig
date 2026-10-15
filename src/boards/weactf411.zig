@@ -22,6 +22,10 @@ pub fn uartWrite(bytes: []const u8) void {
     f4.usart1.write(bytes);
 }
 
+pub fn uartFlush() void {
+    f4.usart1.flush();
+}
+
 pub fn cpuFrequencyHz() u32 {
     return f4.cpu_frequency_hz;
 }

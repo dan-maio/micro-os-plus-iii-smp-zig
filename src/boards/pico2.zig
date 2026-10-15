@@ -49,6 +49,12 @@ pub const uart = struct {
         instance.get_regs().UARTDR.write_raw(c);
     }
 
+    /// Wait until the last byte left the pin (not BUSY).
+    pub fn flush() void {
+        if (!ready) return;
+        while (instance.get_regs().UARTFR.read().BUSY == 1) {}
+    }
+
     pub fn getChar() ?u8 {
         if (!ready) return null;
         if (!instance.is_readable()) return null;
@@ -65,6 +71,10 @@ pub fn init() void {
 /// The trace goes to the UART console (the port mirrors it to semihosting).
 pub fn uartWrite(bytes: []const u8) void {
     uart.write(bytes);
+}
+
+pub fn uartFlush() void {
+    uart.flush();
 }
 
 pub fn cpuFrequencyHz() u32 {

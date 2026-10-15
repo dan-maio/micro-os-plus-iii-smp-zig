@@ -94,6 +94,12 @@ pub const usart1 = struct {
         while (SR.* & (1 << 7) == 0) {}
         DR.* = c;
     }
+
+    /// Wait until the last byte left the pin (TC).
+    pub fn flush() void {
+        if (!ready) return;
+        while (SR.* & (1 << 6) == 0) {}
+    }
 };
 
 /// The board LED on a GPIO pin (active low on the WeAct boards).

@@ -561,9 +561,20 @@ pub const trace = struct {
 };
 
 /// End the run with a verdict, through semihosting.
+///
+/// Before the SYS_EXIT: wait until the console UART sent its last byte,
+/// then about 1 s more. OpenOCD exits on SYS_EXIT and disconnects the
+/// probe at once; a probe that also bridges the UART (the WCH-Link of the
+/// WeAct board) drops what it has not yet forwarded to the host, and the
+/// terminal lost the end of the run (the summary, the stacks, the RESULT).
 pub fn terminate(code: u8) noreturn {
     arch.disableIrq();
     trace.write(if (code == 0) "RESULT: PASS\n" else "RESULT: FAIL\n");
+    if (@hasDecl(board, "uartFlush")) {
+        board.uartFlush();
+        var n: u32 = board.cpuFrequencyHz(); // >= 1 s: >= 1 cycle per turn
+        while (n > 0) : (n -= 1) arch.nop();
+    }
     semihosting.exit(code);
 }
 
