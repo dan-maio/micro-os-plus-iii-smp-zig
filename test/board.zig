@@ -145,3 +145,25 @@ pub const hw_result = struct {
         uos.port.terminate(1);
     }
 };
+
+/// `console()` / `report_per_core()` (the C++ test-console.hpp): output
+/// formatted into a 256-byte buffer and written under one mutex, so lines
+/// from different CPUs do not interleave.
+var console_mutex: uos.rtos.Mutex = .{ .name = "con" };
+
+pub fn console(comptime fmt: []const u8, args: anytype) void {
+    var buf: [256]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    w.print(fmt, args) catch {};
+    console_mutex.lock() catch {};
+    uart.puts(w.buffered());
+    console_mutex.unlock() catch {};
+}
+
+pub fn reportPerCore(label: []const u8, counts: []const u32) void {
+    var buf: [32 * 16 + 64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    w.print("  {s} : ", .{label}) catch {};
+    for (counts, 0..) |n, c| w.print("c{d}={d} ", .{ c, n }) catch break;
+    console("{s}\n", .{w.buffered()});
+}
