@@ -31,6 +31,13 @@ const tests = [_]Test{
     .{ .name = "smp-test2" },
     .{ .name = "smp-test3" },
     .{ .name = "smp-test4" },
+    .{ .name = "mutex-stress" },
+    .{
+        .name = "rtos-apis",
+        .c_sources = &.{"test/rtos-apis/test-c-api.c"},
+        // The port's default stack and tick, as main.zig's uos_options.
+        .c_flags = &.{ "-std=c11", "-DOS_INTEGER_RTOS_DEFAULT_STACK_SIZE_BYTES=65536", "-DOS_INTEGER_SYSTICK_FREQUENCY_HZ=1000" },
+    },
 };
 
 pub fn build(b: *std.Build) void {
@@ -62,6 +69,7 @@ pub fn build(b: *std.Build) void {
         if (t.c_sources.len > 0) {
             const root = exe.root_module;
             uos_build.addCIncludes(kernel_dep, root, false);
+            root.addIncludePath(b.path("include"));
             root.addIncludePath(b.path(b.fmt("test/{s}", .{t.name})));
             root.addCSourceFiles(.{ .files = t.c_sources, .flags = t.c_flags });
         }

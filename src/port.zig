@@ -45,6 +45,13 @@ pub const Context = struct {
     ucontext: c.ucontext_t = undefined,
 };
 
+/// The C API storage sizes this port raises, in pointer words: a thread
+/// carries a ucontext. The same numbers as
+/// include/cmsis-plus/rtos/port/os-c-storage.h.
+pub const c_storage_words = struct {
+    pub const thread = 192;
+};
+
 const Entry = *const fn (?*anyopaque) callconv(.c) noreturn;
 
 /// The first code a new context runs: unmask what the switch left masked,
@@ -207,6 +214,10 @@ pub const interrupts = struct {
 
 pub const scheduler = struct {
     pub fn initialize() void {
+        // The trace writes the standard output directly; C code linked with
+        // the application prints there through stdio. Unbuffered, the two
+        // stay in program order (in C++ both go through stdio).
+        _ = c.setvbuf(c.stdout, null, c._IONBF, 0);
         _ = c.sigemptyset(&irq_set);
         _ = c.sigaddset(&irq_set, tickSignal());
         _ = c.sigaddset(&irq_set, ipiSignal());
@@ -574,8 +585,11 @@ pub const trace = struct {
     }
 };
 
-/// End the process with the verdict as its exit code (`hw_result`).
+/// End the process with the verdict as its exit code (`hw_result`): flush
+/// the C stdio buffers first (C code linked with the application prints
+/// with printf()), then `_exit()`.
 pub fn terminate(code: u8) noreturn {
+    _ = c.fflush(null);
     c._exit(code);
 }
 
