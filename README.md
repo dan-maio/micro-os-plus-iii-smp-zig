@@ -12,6 +12,7 @@ also needs exactly one architecture port, a sibling repository:
 micro-os-plu-iii-smp-zig-pr-github/
 ├── micro-os-plus-iii/              ← this repository (the kernel, module `uos`)
 ├── micro-os-plus-iii-cortexm/      ← the Cortex-M port (Pico 2, WeAct F411, ...)
+├── micro-os-plus-iii-aarch32/      ← the ARMv7-A port (Luckfox Lyra B, 3× Cortex-A7)
 └── micro-os-plus-iii-posix-arch/   ← the synthetic POSIX port (GNU/Linux host)
 ```
 
@@ -106,6 +107,22 @@ programs the board with OpenOCD and follows the semihosting output until
 `zig-out/hw-logs/<board>/<test>.log`. The UART carries the same output, for
 a terminal. Reset the Pico 2 between tests (it keeps USB and SIO state
 across a debugger reset).
+
+### On the Luckfox Lyra (the AArch32 port)
+
+```sh
+cd micro-os-plus-iii-aarch32
+zig build                                            # build every test
+zig build run -Dtest=smp-test2                       # build one test, and run it
+bash test/hw.sh luckfox-lyra zig-out/firmware/luckfox-lyra/smp-test2.elf 120   # run an image
+```
+
+The runner loads the image into DRAM with OpenOCD (halt core 0, MMU and
+caches off, `load_image`, resume at 0x00200000) and follows the semihosting
+output; the logs are in `zig-out/hw-logs/luckfox-lyra/<test>.log`. Power
+cycle the Lyra between tests: CPUs 1 and 2 (and the Cortex-M0) stay running
+once a test released them. The SD tests mount the card's existing FAT32
+volume and write only in `/tests`.
 
 ### On the host (the POSIX port)
 
@@ -234,10 +251,12 @@ its first switch.
 5. On SMP: the other CPUs, the IPI, then `smp-test2`..`smp-test4` and the
    stress tests.
 
-The Cortex-M port (`micro-os-plus-iii-cortexm/src/port.zig`) and the POSIX
-port (`micro-os-plus-iii-posix-arch/src/port.zig`) are the two worked
-examples: hardware registers and assembly in one, signals and ucontexts in
-the other, behind the same contract. `docs/aarch32-aarch64-smp-amp-porting-guide.md`
+The Cortex-M port (`micro-os-plus-iii-cortexm/src/port.zig`), the AArch32
+port (`micro-os-plus-iii-aarch32/src/port.zig`) and the POSIX port
+(`micro-os-plus-iii-posix-arch/src/port.zig`) are the worked examples:
+hardware registers and assembly in two (an M-profile PendSV, an A-profile
+IRQ-mode return with a deferred SMP publish), signals and ucontexts in the
+third, behind the same contract. `docs/aarch32-aarch64-smp-amp-porting-guide.md`
 discusses further targets.
 
 ## Licence
