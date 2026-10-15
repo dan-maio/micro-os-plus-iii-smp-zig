@@ -7,7 +7,8 @@
 //!              (memcpy, memset, memmove and memcmp come from compiler_rt)
 //!   assert.h   assert() -> __assert_func() -> the Zig panic
 //!   trace.h    trace_printf, trace_vprintf, trace_puts, trace_putchar,
-//!              trace_write, trace_flush (cmsis-plus/diag/trace.h)
+//!              trace_write, trace_flush (cmsis-plus/diag/trace.h); these
+//!              also with `Options.c_api`, on hosted targets too
 //!
 //! The printf conversions are the usual subset: d i u x X o c s p %, the
 //! flags '-' '0' '+' ' ' '#', width and precision (also '*'), and the
@@ -38,6 +39,13 @@ comptime {
             .{ "strchr", &strchr },
             .{ "strrchr", &strrchr },
             .{ "__assert_func", &assertFunc },
+        }) |e| @export(e[1], .{ .name = e[0], .linkage = weak });
+    }
+    // The trace C API (cmsis-plus/diag/trace.h) is part of the µOS++ C API:
+    // also on hosted targets, which have their own libc.
+    if (config.options.c_runtime or config.options.c_api) {
+        const weak: std.lang.GlobalLinkage = .weak;
+        for (.{
             .{ "trace_printf", &printf },
             .{ "trace_vprintf", &vprintf },
             .{ "trace_puts", &puts },
