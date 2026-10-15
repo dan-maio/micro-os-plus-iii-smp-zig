@@ -21,7 +21,7 @@ const console = board.console;
 
 pub const uos_options = board.options(4);
 
-const run_ms: u32 = 4000;
+const run_ms: u32 = 20000;
 
 fn ledToggle() void {
     board.led.toggle();

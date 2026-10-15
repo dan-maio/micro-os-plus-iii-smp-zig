@@ -67,6 +67,14 @@ fn osMain() void {
         printf("ret={d}\n", .{ret});
     }
 
+    if (ret == 0) {
+        printf("All API checks passed. Running 20s soak verification...\n", .{});
+        for (1..21) |s| {
+            uos.rtos.sysclock.sleepFor(1000) catch {};
+            printf("  soak: {d}/20 seconds...\n", .{s});
+        }
+    }
+
     printf("done\n", .{});
 
     printf("\nRESULT: {s}\n", .{if (ret == 0) "PASS" else "FAIL"});

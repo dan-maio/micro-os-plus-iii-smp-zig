@@ -50,7 +50,7 @@ fn busyWait(micros: u32) void {
 }
 
 fn osMain() void {
-    const seconds: u32 = 10; // RUN_SECONDS
+    const seconds: u32 = 20; // RUN_SECONDS
 
     printf("\nMutex stress & uniformity test\n", .{});
     printf("Built with Zig {s}\n", .{builtin.zig_version_string});
