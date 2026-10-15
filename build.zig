@@ -40,6 +40,7 @@ const tests = [_]Test{
     .{ .name = "mutex-ceiling-test" },
     .{ .name = "smp-mutex-stress" },
     .{ .name = "smp-pro-cons-test" },
+    .{ .name = "smp-mat-test" },
     .{
         .name = "smp-rtos-apis",
         .c_sources = &.{"test/rtos-apis/test-c-api.c"},
