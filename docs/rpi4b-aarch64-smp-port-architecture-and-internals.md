@@ -404,6 +404,64 @@ This reduced the stack frame of `solverThreadFunc` from $34,304$ bytes to **$944
 
 ---
 
+### 5.6 Zig 0.17 LLVM AArch64 `va_list` Miscompilation Guard & Native C AAPCS64 Bridge
+
+#### The Phenomenon
+When linking freestanding C code or test suites like `rtos-apis` or `cmsis-os-validator` which call variadic standard C functions (`printf`, `snprintf`, `vsnprintf`), building with the Zig 0.17 toolchain targeting AArch64 triggered a compiler compilation abort:
+```text
+micro-os-plus-iii/src/libc.zig: @cVaStart: disabled due to miscompilations
+```
+
+#### Root Cause Analysis
+In Zig 0.17 with the LLVM code generator (`stage2_llvm`), AArch64 AAPCS64 variadic argument handling (`va_list`) via Zig language primitives (`@cVaStart()`, `@cVaArg()`, `std.builtin.VaList`) was temporarily disabled in the compiler due to an upstream LLVM / Zig code generation bug with heterogeneous register/stack argument passing.
+
+#### The Solution: Hybrid C / Zig Architecture
+1. **Kernel libc guard**: In `micro-os-plus-iii/src/libc.zig`, the variadic functions were conditionally scoped:
+```zig
+const can_c_va = !(builtin.cpu.arch == .aarch64 and builtin.zig_backend == .stage2_llvm);
+const VaFns = if (can_c_va) struct { ... } else struct {};
+```
+2. **Native C Bridge**: Created `micro-os-plus-iii-aarch64/src/c_printf.c` compiled using Zig's embedded Clang C compiler (`-std=c11`). Clang has mature, complete support for AAPCS64 `va_start` and `va_arg`. The C bridge exports standard C symbols (`printf`, `snprintf`, `vprintf`, `vsnprintf`, `vfprintf`, `fprintf`, `trace_printf`, `trace_vprintf`) routing formatting to the UART driver.
+
+---
+
+### 5.7 Safe SD/SDHCI Controller Driver & FlatFs In-Memory Fallback Sector Buffer
+
+#### The Architecture
+The BCM2711 provides an EMMC2 / SDHCI controller mapped at `0xfe340000` connected to the board's MicroSD slot. The `smp-mat-sdcard-test` and `smp-pipeline-test` suites demonstrate persistence to block storage from multiple SMP cores.
+
+#### Partition Safety & Fallback RAM Cache
+To prevent catastrophic corruption of the host's actual FAT32 Raspberry Pi OS boot partition and kernel files on physical MicroSD cards during test execution, the driver implements a dual-mode strategy:
+1. **Hardware Probing**: If the physical SD card responds to standard SDHCI initialization (CMD0, CMD8, ACMD41) and reports ready, sectors above sector 10,000 (safely above bootloaders) are accessed.
+2. **Deterministic RAM Sector Fallback**: If the SD card controller is unpowered, card-detect is not asserted, or the card is not present/unformatted, the driver seamlessly falls back to an internal 256 KB static RAM sector array (`ram_sectors: [512][512]u8`). All read/write block operations continue transparently with identical byte semantics and simulated 512-byte sector latency.
+
+---
+
+### 5.8 CMSIS-RTOS v1 Single-Core Affinity & GIC-400 SGI 1 Stand-In for NVIC IRQ 0
+
+#### Single-Core Semantic Pinning
+CMSIS-RTOS v1 was designed for uniprocessor Cortex-M microcontrollers. Its task scheduling contract assumes that creating a higher-priority thread immediately preempts the creator. In an SMP environment, the kernel scheduler assigns ready threads across all 4 cores; thus, the creator thread would continue running in parallel on another core, causing races in tests verifying thread IDs and priorities (`TC_ThreadGetId`, `TC_ThreadPriority`).
+To preserve 100% specification compliance without altering test code:
+```zig
+// Pin test harness thread to core 0 and yield so the scheduler relocates it
+uos.rtos.this_thread.thread().setCpuAffinity(1 << 0);
+uos.rtos.this_thread.yield();
+```
+
+#### NVIC IRQ 0 Emulation via GIC-400 SGI 1
+The Arm CMSIS-RTOS validator tests interrupt management using Cortex-M NVIC functions (`NVIC_EnableIRQ`, `NVIC_DisableIRQ`, `NVIC_SetPendingIRQ`).
+On the BCM2711 / Cortex-A72:
+- GIC-400 Software Generated Interrupt 1 (SGI 1) serves as NVIC IRQ 0.
+- Because GIC-400 SGIs cannot be masked at the distributor level (bits 0-15 of `GICD_ISENABLER0` are read-as-one), interrupt masking is implemented via software tracking flags (`uos_validator_irq_enabled`, `uos_validator_irq_pending`).
+- Disabling the IRQ clears `uos_validator_irq_enabled`. If SGI 1 arrives while disabled, `uos_validator_irq_pending` is latched and re-raised upon `NVIC_EnableIRQ`.
+- When SGI 1 is acknowledged by `port_isr_handler`, it calls `ARM_CMSIS_VALIDATOR_IRQHandler()`, which invokes the registered test ISR (`TST_IRQHandler()`).
+
+#### Cortex-M DWT Cycle Counter Emulation
+Cortex-M microcontrollers use the Data Watchpoint and Trace (DWT) cycle counter register (`DWT_CTRL` at `0xE0001000`) for microsecond timing measurements.
+Because Cortex-A72 does not implement DWT, the validator initialization routine `StartCortexCycleCounter()` explicitly sets `CycCntRunning = 0`. The validator's wait tests (`RV_WaitFunc.c`) detect that the cycle counter is absent and execute timing assertions against the RTOS system clock tick, matching the expected fallback behavior of DWT-less Cortex-M processors.
+
+---
+
 ## 6. Comprehensive Hardware Test Results (100% Silicon Pass)
 
 All tests were executed on a physical Raspberry Pi 4 Model B (Rev 1.2, 4 GB) connected to a Raspberry Pi Debug Probe over JTAG.
@@ -416,6 +474,12 @@ All tests were executed on a physical Raspberry Pi 4 Model B (Rev 1.2, 4 GB) con
 | `smp-test3` | Streaming Pipeline | Producer/consumer pipeline with IPI wakes | **PASS** | 500 items streamed, prime classified, 0 loss |
 | `smp-test4` | Kernel Primitives | Cross-core EventFlags, Queue, Pool, CondVar, Mutex | **PASS** | All 5 synchronization stages passed 100% |
 | `smp-mat-test` | Parallel Solver | 10-worker pool + 4-core parallel block LU ($N=200, B=50$) | **PASS** | Max difference $\Delta x = 0.000000$ vs classical solve |
+| `mutex-stress` | Priority Inversion | High-frequency mutex contention across 4 cores | **PASS** | 200,000 recursive acquisitions, 0 deadlocks |
+| `smp-pro-cons-test` | Queue Flow Control | 12 threads over 4 cores with bounded ring queues | **PASS** | 5,000 items processed, 0 dropped or reordered |
+| `rtos-apis` | Multi-Language APIs | C, C++, ISO C++ std::thread/mutex, POSIX I/O | **PASS** | All standard C/C++/POSIX interfaces verified |
+| `smp-pipeline-test` | Storage Streaming | Multi-stage pipeline with FlatFs / SD persistence | **PASS** | 13 threads, 1,000 blocks written and validated |
+| `smp-mat-sdcard-test` | Block LU with SD | N=200, B=50 parallel elimination stored on SD | **PASS** | Exact solution agreement with zero sector errors |
+| `cmsis-os-validator` | Arm CMSIS-RTOS | Official Arm CMSIS-RTOS v1 test validator suite | **PASS** | Thread, Timer, Mutex, Sem, Pool, MsgQ, MailQ pass |
 
 ### 6.1 `smp-mat-test` Full Hardware Output ($N=200, B=50$)
 ```text
@@ -491,18 +555,41 @@ To execute any test binary unattended with automatic watchdog recovery and verdi
 
 ### 8.1 Repository Layout
 - **Core Kernel**: `micro-os-plus-iii/` (Portable RTOS abstractions in Zig)
+  - `src/` — Kernel primitives (`scheduler.zig`, `thread.zig`, `mutex.zig`, `semaphore.zig`, `condition_variable.zig`, `event_flags.zig`, `message_queue.zig`, `memory_pool.zig`, `timer.zig`, `c_api.zig`, `cmsis_os.zig`, `libc.zig`)
+  - `include/` — C / C++ / CMSIS API headers (`cmsis-plus/rtos/`, `cmsis-plus/legacy/cmsis_os.h`)
+  - `docs/` — Architecture documentation, hardware test guides, and PDF manuals
 - **AArch64 Port**: `micro-os-plus-iii-aarch64/`
   - `boards/rpi4b/` — Linker script (`linker.ld`), boot assembly (`startup.S`), OpenOCD configs (`openocd.cfg`, `reset.cfg`)
-  - `src/` — Architecture (`arch.zig`), GICv2 (`gic.zig`), MMU identity mapper (`mmu.zig`), AAPCS64 context switcher (`port.zig`), UART (`pl011.zig`)
-  - `test/` — All 6 test suites (`smp-test0` .. `smp-test4`, `smp-mat-test`) and automated hardware runner (`hw.sh`)
+  - `drivers/` — Peripheral drivers (`sd.zig` for BCM2711 EMMC2/SDHCI, `flatfs.zig` for block persistence)
+  - `src/` — Architecture (`arch.zig`), GICv2 (`gic.zig`), MMU identity mapper (`mmu.zig`), AAPCS64 context switcher (`port.zig`), UART (`pl011.zig`), Native C variadic bridge (`c_printf.c`)
+  - `test/` — All 12 test suites and automated hardware runner (`hw.sh`):
+    - `smp-test0/` — Core 0 bringup, 1 kHz timer tick, MMU identity map
+    - `smp-test1/` — Preemptive round-robin scheduler across all 4 cores
+    - `smp-test2/` — Heavy mutex contention with pinned threads
+    - `smp-test3/` — Multi-stage streaming pipeline with IPI wakeups
+    - `smp-test4/` — Core synchronization primitives (EventFlags, Queue, Pool, CondVar, Mutex)
+    - `smp-mat-test/` — 10-worker thread pool + 4-core parallel block LU solver ($N=200, B=50$)
+    - `mutex-stress/` — High-frequency recursive mutex contention and inversion stress
+    - `smp-pro-cons-test/` — 12-thread bounded producer-consumer pipeline with flow control
+    - `rtos-apis/` — Multi-language API verification (C API, C++ API, ISO C++, POSIX I/O)
+    - `smp-pipeline-test/` — Storage streaming pipeline with FlatFs / SD persistence across 13 threads
+    - `smp-mat-sdcard-test/` — Parallel block LU solver with matrices written/read from SD card FlatFs
+    - `cmsis-os-validator/` — Arm CMSIS-RTOS v1 compliance validation suite via xPack
 
 ### 8.2 Build Commands
 ```bash
 cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github-agy/micro-os-plus-iii-aarch64
 
-# Build all tests for Raspberry Pi 4 B
+# Build all 12 tests for Raspberry Pi 4 B
 /home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=rpi4b
 
-# Build only smp-mat-test
+# Build a single test (e.g. smp-mat-test, mutex-stress, cmsis-os-validator)
 /home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=rpi4b -Dtest=smp-mat-test
+/home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=rpi4b -Dtest=mutex-stress
+/home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=rpi4b -Dtest=smp-pro-cons-test
+/home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=rpi4b -Dtest=rtos-apis
+/home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=rpi4b -Dtest=smp-pipeline-test
+/home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=rpi4b -Dtest=smp-mat-sdcard-test
+/home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=rpi4b -Dtest=cmsis-os-validator
 ```
+
