@@ -28,6 +28,9 @@ const Test = struct {
     /// Also import the rtos-apis sub-tests (test/rtos-apis/parts.zig) as
     /// `rtos_apis`.
     rtos_apis_parts: bool = false,
+    /// Also import the board's storage drivers (drivers/): `sd` (the host
+    /// file card) and `flatfs`.
+    devices: bool = false,
 };
 
 const tests = [_]Test{
@@ -41,6 +44,7 @@ const tests = [_]Test{
     .{ .name = "smp-mutex-stress" },
     .{ .name = "smp-pro-cons-test" },
     .{ .name = "smp-mat-test" },
+    .{ .name = "flatfs-test", .devices = true },
     .{
         .name = "smp-rtos-apis",
         .c_sources = &.{"test/rtos-apis/test-c-api.c"},
@@ -93,6 +97,15 @@ pub fn build(b: *std.Build) void {
             const parts = b.createModule(.{ .root_source_file = b.path("test/rtos-apis/parts.zig") });
             parts.addImport("uos", exe.root_module.import_table.get("uos").?);
             exe.root_module.addImport("rtos_apis", parts);
+        }
+        if (t.devices) {
+            const uos_mod = exe.root_module.import_table.get("uos").?;
+            const sd = b.createModule(.{ .root_source_file = b.path("drivers/sd.zig"), .link_libc = true });
+            const flatfs = b.createModule(.{ .root_source_file = b.path("drivers/flatfs.zig") });
+            flatfs.addImport("sd", sd);
+            flatfs.addImport("uos", uos_mod);
+            exe.root_module.addImport("sd", sd);
+            exe.root_module.addImport("flatfs", flatfs);
         }
         b.installArtifact(exe);
 

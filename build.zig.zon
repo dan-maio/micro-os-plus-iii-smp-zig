@@ -7,5 +7,5 @@
         // The portable kernel, the sibling repository.
         .micro_os_plus_iii = .{ .path = "../micro-os-plus-iii" },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "src", "include", "test", "LICENSE", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "include", "drivers", "test", "LICENSE", "README.md" },
 }
