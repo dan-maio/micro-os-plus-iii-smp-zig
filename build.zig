@@ -23,6 +23,11 @@ const Test = struct {
     /// C sources linked with the test (its main.zig enables `c_api`).
     c_sources: []const []const u8 = &.{},
     c_flags: []const []const u8 = &.{},
+    /// Folder of the C sources' headers (default: the test's own).
+    c_include: ?[]const u8 = null,
+    /// Also import the rtos-apis sub-tests (test/rtos-apis/parts.zig) as
+    /// `rtos_apis`.
+    rtos_apis_parts: bool = false,
 };
 
 const tests = [_]Test{
@@ -34,6 +39,13 @@ const tests = [_]Test{
     .{ .name = "mutex-stress" },
     .{ .name = "mutex-ceiling-test" },
     .{ .name = "smp-mutex-stress" },
+    .{
+        .name = "smp-rtos-apis",
+        .c_sources = &.{"test/rtos-apis/test-c-api.c"},
+        .c_flags = &.{ "-std=c11", "-DOS_INTEGER_RTOS_DEFAULT_STACK_SIZE_BYTES=65536", "-DOS_INTEGER_SYSTICK_FREQUENCY_HZ=1000" },
+        .c_include = "test/rtos-apis",
+        .rtos_apis_parts = true,
+    },
     .{
         .name = "rtos-apis",
         .c_sources = &.{"test/rtos-apis/test-c-api.c"},
@@ -72,8 +84,13 @@ pub fn build(b: *std.Build) void {
             const root = exe.root_module;
             uos_build.addCIncludes(kernel_dep, root, false);
             root.addIncludePath(b.path("include"));
-            root.addIncludePath(b.path(b.fmt("test/{s}", .{t.name})));
+            root.addIncludePath(b.path(t.c_include orelse b.fmt("test/{s}", .{t.name})));
             root.addCSourceFiles(.{ .files = t.c_sources, .flags = t.c_flags });
+        }
+        if (t.rtos_apis_parts) {
+            const parts = b.createModule(.{ .root_source_file = b.path("test/rtos-apis/parts.zig") });
+            parts.addImport("uos", exe.root_module.import_table.get("uos").?);
+            exe.root_module.addImport("rtos_apis", parts);
         }
         b.installArtifact(exe);
 
