@@ -35,7 +35,14 @@ const Test = struct {
     /// Also import the board's storage drivers (drivers/): `sd` (the SD
     /// card) and `fatfs` (FatFs on its FAT32 partition, the C ff.c).
     devices: bool = false,
+    /// The test's folder in test/, when not its name.
+    dir: ?[]const u8 = null,
+    /// smp-test-int5: the doorbell from a core-0 thread, or from the
+    /// Cortex-M0 firmware (test/smp-test-int5/m0/, embedded).
+    int5: ?Int5 = null,
 };
+
+const Int5 = enum { selftrig, m0 };
 
 const tests = [_]Test{
     .{ .name = "smp-test0" },
@@ -48,6 +55,9 @@ const tests = [_]Test{
     .{ .name = "smp-num-test", .devices = true },
     .{ .name = "smp-pipeline-test", .devices = true },
     .{ .name = "sd_test", .devices = true },
+    .{ .name = "smp-mat-sdcard-test", .devices = true },
+    .{ .name = "smp-test-int5", .int5 = .selftrig },
+    .{ .name = "smp-test-int5-m0", .dir = "smp-test-int5", .int5 = .m0 },
 };
 
 pub fn build(b: *std.Build) void {
@@ -79,8 +89,9 @@ pub fn build(b: *std.Build) void {
             .board = board_id,
             .target = target,
             .optimize = optimize,
-            .app_source_file = b.path(b.fmt("test/{s}/main.zig", .{t.name})),
+            .app_source_file = b.path(b.fmt("test/{s}/main.zig", .{t.dir orelse t.name})),
             .devices = t.devices,
+            .int5 = t.int5,
         });
 
         const install = b.addInstallArtifact(exe, .{
@@ -109,6 +120,8 @@ pub const FirmwareOptions = struct {
     app_source_file: std.Build.LazyPath,
     /// Link the storage drivers (`sd`, `fatfs`) and FatFs (ff.c).
     devices: bool = false,
+    /// smp-test-int5's variant (the `int5` options module, the M0 image).
+    int5: ?Int5 = null,
 };
 
 /// Build a µOS++ image for a board: the kernel, this port, the board
@@ -153,6 +166,13 @@ pub fn addFirmware(b: *std.Build, kernel_dep: *std.Build.Dependency, options: Fi
     });
     root_mod.addAssemblyFile(b.path(b.fmt("{s}/startup.S", .{board_dir})));
 
+    if (options.int5) |variant| {
+        const opts = b.addOptions();
+        opts.addOption(bool, "selftrig", variant == .selftrig);
+        app_mod.addOptions("int5", opts);
+        if (variant == .m0) app_mod.addAnonymousImport("m0_fw.bin", .{ .root_source_file = addM0Firmware(b, options.optimize) });
+    }
+
     if (options.devices) {
         // FatFs R0.15a, the C sources unchanged, over the kernel's
         // freestanding C runtime (uos_options.c_runtime).
@@ -186,4 +206,30 @@ pub fn addFirmware(b: *std.Build, kernel_dep: *std.Build.Dependency, options: Fi
     // VBAR; keep the sections the linker script lists.
     exe.link_gc_sections = true;
     return exe;
+}
+
+/// The Cortex-M0 firmware of smp-test-int5: a Thumb image linked at the M0's
+/// 0x0, as a raw binary for the A7 to copy to System SRAM.
+fn addM0Firmware(b: *std.Build, optimize: std.lang.Optimize) std.Build.LazyPath {
+    const m0 = b.addExecutable(.{
+        .name = "m0_fw",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/smp-test-int5/m0/main.zig"),
+            .target = b.resolveTargetQuery(.{
+                .cpu_arch = .thumb,
+                .os_tag = .freestanding,
+                .abi = .eabi,
+                .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_m0 },
+            }),
+            // Small and without safety checks: the M0 has no console to
+            // report a panic on.
+            .optimize = if (optimize == .debug) .debug else .small,
+            .single_threaded = true,
+        }),
+    });
+    m0.setLinkerScript(b.path("test/smp-test-int5/m0/linker.ld"));
+    m0.entry = .{ .symbol_name = "g_vectors" };
+    const bin = b.addObjCopy(m0.getEmittedBin(), .{ .format = .binary });
+    b.getInstallStep().dependOn(&b.addInstallFile(bin.getOutput(), "firmware/luckfox-lyra/m0_fw.bin").step);
+    return bin.getOutput();
 }
