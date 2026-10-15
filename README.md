@@ -13,6 +13,7 @@ micro-os-plu-iii-smp-zig-pr-github/
 ├── micro-os-plus-iii/              ← this repository (the kernel, module `uos`)
 ├── micro-os-plus-iii-cortexm/      ← the Cortex-M port (Pico 2, WeAct F411, ...)
 ├── micro-os-plus-iii-aarch32/      ← the ARMv7-A port (Luckfox Lyra B, 3× Cortex-A7)
+├── micro-os-plus-iii-aarch64/      ← the ARMv8-A port (Raspberry Pi 4 B, 4× Cortex-A72)
 └── micro-os-plus-iii-posix-arch/   ← the synthetic POSIX port (GNU/Linux host)
 ```
 
@@ -123,6 +124,21 @@ output; the logs are in `zig-out/hw-logs/luckfox-lyra/<test>.log`. Power
 cycle the Lyra between tests: CPUs 1 and 2 (and the Cortex-M0) stay running
 once a test released them. The SD tests mount the card's existing FAT32
 volume and write only in `/tests`.
+
+### On the Raspberry Pi 4 B (the AArch64 port)
+
+```sh
+cd micro-os-plus-iii-aarch64
+zig build                                            # build every test
+test/run-all.sh                                      # run all of them, with a verdict table
+bash test/hw.sh rpi4b zig-out/firmware/rpi4b/smp-test2.elf 180   # run an image
+```
+
+Each run resets the Pi through its watchdog (OpenOCD), waits 10 s for it to
+boot from its SD card, loads the image and runs it to its verdict, at most
+3 minutes. Only the verdict lines go through semihosting (OpenOCD does not
+resume cores 1–3 after a semihosting call on this board); the console is on
+the UART. The SD tests write only in the card's `/tests`.
 
 ### On the host (the POSIX port)
 
@@ -252,11 +268,12 @@ its first switch.
    stress tests.
 
 The Cortex-M port (`micro-os-plus-iii-cortexm/src/port.zig`), the AArch32
-port (`micro-os-plus-iii-aarch32/src/port.zig`) and the POSIX port
+and AArch64 ports (`micro-os-plus-iii-aarch32/src/port.zig`,
+`micro-os-plus-iii-aarch64/src/port.zig`) and the POSIX port
 (`micro-os-plus-iii-posix-arch/src/port.zig`) are the worked examples:
-hardware registers and assembly in two (an M-profile PendSV, an A-profile
-IRQ-mode return with a deferred SMP publish), signals and ucontexts in the
-third, behind the same contract. `docs/aarch32-aarch64-smp-amp-porting-guide.md`
+hardware registers and assembly in three (an M-profile PendSV, A-profile
+exception returns with a deferred SMP publish), signals and ucontexts in the
+last, behind the same contract. `docs/aarch32-aarch64-smp-amp-porting-guide.md`
 discusses further targets.
 
 ## Licence
