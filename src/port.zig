@@ -26,6 +26,17 @@ const c = @import("host_c");
 
 const config = uos.config;
 const ncpu = config.ncpu;
+const root = @import("root");
+
+/// The port's own options; an application declares
+/// `pub const uos_port_options: uos.port.Options = .{ ... };`.
+pub const Options = struct {
+    /// The trace on the standard error instead of the standard output
+    /// (`OS_USE_TRACE_POSIX_STDERR` / `OS_USE_TRACE_POSIX_STDOUT`).
+    trace_stderr: bool = false,
+};
+
+pub const options: Options = if (@hasDecl(root, "uos_port_options")) root.uos_port_options else .{};
 
 comptime {
     if (builtin.os.tag != .linux) @compileError("the POSIX port supports GNU/Linux only (per-thread tick timers)");
@@ -567,9 +578,10 @@ pub const clock_highres = struct {
 // Contract: trace, termination, memory.
 
 fn traceWrite(bytes: []const u8) void {
+    const fd: c_int = if (options.trace_stderr) 2 else 1;
     var rest = bytes;
     while (rest.len > 0) {
-        const n = c.write(1, rest.ptr, rest.len);
+        const n = c.write(fd, rest.ptr, rest.len);
         if (n <= 0) {
             if (n < 0 and errnoPtr().* == c.EINTR) continue;
             return;
@@ -578,7 +590,8 @@ fn traceWrite(bytes: []const u8) void {
     }
 }
 
-/// The trace goes to the standard output (`OS_USE_TRACE_POSIX_STDOUT`).
+/// The trace goes to the standard output (`OS_USE_TRACE_POSIX_STDOUT`), or
+/// with `options.trace_stderr` to the standard error.
 pub const trace = struct {
     pub fn write(bytes: []const u8) void {
         traceWrite(bytes);

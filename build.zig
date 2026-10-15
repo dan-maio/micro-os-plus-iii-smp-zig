@@ -47,6 +47,8 @@ const tests = [_]Test{
     .{ .name = "flatfs-test", .devices = true },
     .{ .name = "smp-num-test", .devices = true },
     .{ .name = "smp-pipeline-test", .devices = true },
+    .{ .name = "trace-stdout", .c_sources = &.{"test/trace-stdout/trace-c.c"}, .c_flags = &.{ "-std=c11", "-DTRACE" } },
+    .{ .name = "trace-stderr", .c_sources = &.{"test/trace-stderr/trace-c.c"}, .c_flags = &.{ "-std=c11", "-DTRACE" } },
     .{
         .name = "smp-rtos-apis",
         .c_sources = &.{"test/rtos-apis/test-c-api.c"},
