@@ -1,7 +1,8 @@
-//! The C object storage sizes, in pointer words: the
-//! `OS_C_*_STORAGE_WORDS` of include/cmsis-plus/rtos/os-c-decls.h.
-//! c_api.zig checks that each Zig object fits; a host test checks that the
-//! header has the same numbers.
+//! The C object storage sizes, in pointer words: the default
+//! `OS_C_*_STORAGE_WORDS` of include/cmsis-plus/rtos/os-c-decls.h. A port
+//! may raise some (its `c_storage_words`, matching its
+//! cmsis-plus/rtos/port/os-c-storage.h). c_api.zig checks that each Zig
+//! object fits; a host test checks that the header has the same defaults.
 
 pub const words = struct {
     pub const thread = 56;

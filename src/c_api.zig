@@ -49,7 +49,26 @@ comptime {
 // ----------------------------------------------------------------------------
 // Storage.
 
-pub const storage_words = @import("c_storage.zig").words;
+/// The storage sizes: the defaults (c_storage.zig), or the port's, when it
+/// raises them (`uos_port.c_storage_words`, matching its
+/// cmsis-plus/rtos/port/os-c-storage.h).
+pub const storage_words = struct {
+    const defaults = @import("c_storage.zig").words;
+    const overrides = if (@hasDecl(port, "c_storage_words")) port.c_storage_words else struct {};
+
+    fn get(comptime field: []const u8) usize {
+        return if (@hasDecl(overrides, field)) @field(overrides, field) else @field(defaults, field);
+    }
+
+    pub const thread = get("thread");
+    pub const timer = get("timer");
+    pub const mutex = get("mutex");
+    pub const condvar = get("condvar");
+    pub const semaphore = get("semaphore");
+    pub const mempool = get("mempool");
+    pub const mqueue = get("mqueue");
+    pub const evflags = get("evflags");
+};
 
 const storage_align = 8;
 
@@ -59,7 +78,7 @@ pub fn storageBytes(comptime words: usize) usize {
 
 fn checkFits(comptime c_name: []const u8, comptime words: usize, comptime bytes: usize, comptime alignment: usize) void {
     if (bytes > storageBytes(words)) @compileError(std.fmt.comptimePrint(
-        "{s}: the Zig object needs {d} bytes, the C storage has {d} ({d} words); raise OS_C_*_STORAGE_WORDS in os-c-decls.h and c_storage.zig",
+        "{s}: the Zig object needs {d} bytes, the C storage has {d} ({d} words); raise OS_C_*_STORAGE_WORDS (os-c-decls.h and c_storage.zig, or the port's os-c-storage.h and c_storage_words)",
         .{ c_name, bytes, storageBytes(words), words },
     ));
     if (alignment > storage_align) @compileError(c_name ++ ": the Zig object needs a larger alignment than the C storage");

@@ -37,14 +37,41 @@
 #define OS_HAS_INTERRUPTS_STACK
 
 // Storage sizes, in pointer words (keep in sync with src/c_storage.zig).
+//
+// A port may need more room (the POSIX one keeps a glibc ucontext in every
+// thread). Its include folder then has cmsis-plus/rtos/port/os-c-storage.h,
+// which defines the sizes it raises; its Zig module declares the same in
+// `c_storage_words`, and c_api.zig checks the Zig objects against those.
+#if defined(__has_include)
+#if __has_include(<cmsis-plus/rtos/port/os-c-storage.h>)
+#include <cmsis-plus/rtos/port/os-c-storage.h>
+#endif
+#endif
+
+#if !defined(OS_C_THREAD_STORAGE_WORDS)
 #define OS_C_THREAD_STORAGE_WORDS (56)
+#endif
+#if !defined(OS_C_TIMER_STORAGE_WORDS)
 #define OS_C_TIMER_STORAGE_WORDS (20)
+#endif
+#if !defined(OS_C_MUTEX_STORAGE_WORDS)
 #define OS_C_MUTEX_STORAGE_WORDS (20)
+#endif
+#if !defined(OS_C_CONDVAR_STORAGE_WORDS)
 #define OS_C_CONDVAR_STORAGE_WORDS (8)
+#endif
+#if !defined(OS_C_SEMAPHORE_STORAGE_WORDS)
 #define OS_C_SEMAPHORE_STORAGE_WORDS (10)
+#endif
+#if !defined(OS_C_MEMPOOL_STORAGE_WORDS)
 #define OS_C_MEMPOOL_STORAGE_WORDS (24)
+#endif
+#if !defined(OS_C_MQUEUE_STORAGE_WORDS)
 #define OS_C_MQUEUE_STORAGE_WORDS (32)
+#endif
+#if !defined(OS_C_EVFLAGS_STORAGE_WORDS)
 #define OS_C_EVFLAGS_STORAGE_WORDS (10)
+#endif
 
 #ifdef __cplusplus
 extern "C"
