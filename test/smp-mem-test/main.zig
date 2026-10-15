@@ -1,4 +1,4 @@
-//! smp-mem-test -- 20 threads x 5 large alloc/write/read/free operations across 4 cores
+//! smp-mem-test -- 20 threads x 30 large alloc/write/read/free operations across 4 cores
 //! (the C++ test/rpi4b/smp_mem_test).
 //!
 //! A pool of 20 threads, 5 pinned on each core, each running operations:
@@ -20,7 +20,7 @@ const console = board.console;
 pub const uos_options = board.options(4);
 
 const kWorkers: usize = 20;
-const kOps: usize = 10;
+const kOps: usize = 30;
 const kMB: u64 = 1024 * 1024;
 const kMinBytes: u64 = 1 * kMB;
 const kMaxBytes: u64 = 512 * kMB;
@@ -314,7 +314,7 @@ fn osMain() void {
     const gpa = uos.memory.allocator();
 
     console("\n+=============================================================+\n", .{});
-    console("|  " ++ board.banner_short ++ " µOS++ SMP MEMORY TEST : smp-mem-test     |\n", .{});
+    console("|  " ++ board.banner_short ++ " µOS++ SMP MEMORY TEST : smp_mem_test |\n", .{});
     console("+=============================================================+\n\n", .{});
 
     _ = rtos.interrupts.UncriticalSection.enter();
@@ -330,7 +330,7 @@ fn osMain() void {
     console("Region 0x{x:0>8} .. 0x{x:0>8}: {d} MB, all pages unmapped\n", .{
         base, end, (end - base) / kMB,
     });
-    console("{d} threads x {d} operations, blocks of 1 .. {d} MB, every word checked\n\n", .{
+    console("{d} threads x {d} operations, blocks of 1 .. {d} MB, every word written and read back\n\n", .{
         kWorkers, kOps, kMaxBytes / kMB,
     });
 

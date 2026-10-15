@@ -500,10 +500,29 @@ pub const clock_highres = struct {
     }
 };
 
+/// The console: every byte on the UART; on semihosting only the verdict
+/// lines, as the C++ rpi4b hardware build (its uart.hpp, mirror_verdict()):
+/// a semihosting call costs seconds on this probe, and OpenOCD 0.12 does
+/// not resume CPUs 1..3 after one on this board (a line mirrored from them
+/// would stop that CPU). A line holding "RESULT", "FAIL" or "FATAL" is
+/// mirrored, with the following pieces up to the end of that line.
 pub const trace = struct {
+    var verdict_line_open: bool = false;
+
+    fn isVerdict(bytes: []const u8) bool {
+        for ([_][]const u8{ "RESULT", "FAIL", "FATAL" }) |key| {
+            if (std.mem.indexOf(u8, bytes, key) != null) return true;
+        }
+        return false;
+    }
+
     pub fn write(bytes: []const u8) void {
         board.uartWrite(bytes);
-        semihosting.mirror(bytes);
+        if (bytes.len == 0) return;
+        if (verdict_line_open or isVerdict(bytes)) {
+            verdict_line_open = bytes[bytes.len - 1] != '\n';
+            semihosting.mirror(bytes);
+        }
     }
 };
 

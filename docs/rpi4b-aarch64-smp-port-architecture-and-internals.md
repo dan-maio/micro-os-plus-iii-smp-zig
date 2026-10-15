@@ -9,13 +9,18 @@
 
 This document serves as the authoritative technical reference for the **64-bit Arm (AArch64 / ARMv8-A) SMP architecture port** implemented in idiomatic **Zig (0.17.0)**. The primary target hardware platform is the **Raspberry Pi 4 Model B**, powered by the **Broadcom BCM2711 SoC with four ARM Cortex-A72 cores**.
 
-All six core SMP verification suites have been fully ported, verified, and run on **physical Raspberry Pi 4 B silicon** over OpenOCD CMSIS-DAP JTAG with a **100% PASS rate**:
-1. `smp-test0` — Single-core bringup, 1 kHz ARM Generic Timer tick, MMU activation, PL011 UART console.
-2. `smp-test1` — Preemptive round-robin scheduling across four active cores.
-3. `smp-test2` — 4-core mutex contention and atomic counter verification.
-4. `smp-test3` — Cross-core data streaming pipeline synchronized via Inter-Processor Interrupts (IPI).
-5. `smp-test4` — Cross-core kernel synchronization primitives (EventFlags, 2-way MessageQueue, MemoryBlockPool, ConditionVariable, Mutex).
-6. `smp-mat-test` — 10-worker thread pool demo and parallel 4-core block linear equation solver ($N=200, B=50$) validated against ground-truth classical elimination.
+The port runs the 16 tests of the C++ `micro-os-plus-iii-aarch64` rpi4b board (`test/rpi4b/`), as faithful Zig ports: the same banners and lines, the same structure and verdict; the deviations are stated in each test's `main.zig` and in §6. All 16 pass on a physical Raspberry Pi 4 B, over OpenOCD and a CMSIS-DAP probe on JTAG (§6, §7):
+
+1. `smp-test0` — core 0 bring-up: the PL011 console, the MMU, the 1 kHz generic timer tick, one thread sleeping (10 heartbeats).
+2. `smp-test1` — semaphore ping-pong between cores 0 and 1, a logger on core 2.
+3. `smp-test2` — lock coherency: one worker per core, a counter under one mutex (8000 updates).
+4. `smp-test3` — message queue producer (core 0) and consumer (core 1), the rpi4b `g_running` stop.
+5. `smp-test4` — load balancing: 8 workers without affinity spread over the 4 cores.
+6. `smp-mat-test` — a 10-worker thread pool demo and the parallel block solver ($N=120, B=20$) against a classical solve.
+7. `smp-pro-cons-test` — producers and consumers over every kernel object.
+8. `mutex-stress`, `rtos-apis`, `cmsis-os-validator` — the kernel's harness suites, run as the C++ rpi4b harness platform runs them (4 cores, an 8192-element main stack).
+9. `sd_test`, `smp-num-test`, `smp-pipeline-test`, `smp-mat-sdcard-test` — the SD card (EMMC2) and FatFs on its existing FAT32 volume, files in `/tests` (§5.11).
+10. `smp-mem-test`, `smp-mem-inter-test` — 20 threads allocating, writing and checking blocks of up to 512 MB in the RAM above 1 GB, with MMU guard pages and canaries.
 
 ---
 
@@ -359,48 +364,15 @@ Explicitly grouping `*(.got*)` inside `.data` before `.bss` in `boards/rpi4b/lin
 ```
 This reduced the ELF load image from 67 MB down to **~80 KB**, flashing over JTAG in under 3 seconds.
 
-### 5.5 Thread Stack Sizing vs Function Workspace Buffers (`smp-mat-test`)
-#### The Phenomenon
-When running `smp-mat-test` with $N=200$ and $B=50$, the thread pool demo passed 100%, but parallel block elimination failed immediately on the very first context switch:
-```
-!!! SMP CLAIM TRIPWIRE (core 0) !!!
-  old=main new=solver_c0
-  claimed sp=0x00000000000eb420 stack=[0x00000000000f3a20,0x00000000000f5a10)
-  new state=running: BAD!
-```
+### 5.5 Thread Stack Sizing (`smp-mat-test`, `smp-mat-sdcard-test`)
+#### The phenomenon
+`smp-mat-test` hung on the board right after its thread pool demo: all 20 tasks ran, "Thread Pool demo finished" never came, and all four cores were idle in their idle threads.
 
-#### Root Cause Analysis
-In the original C++ reference, block workspace buffers were declared `static`:
-```cpp
-// Per-core workspace (static to keep thread stacks tiny).
-static float A_kk_T[B][B];
-static float A_ii[B][B];
-static float LU_ii[B][B];
-static float A_ij_temp[B][B];
-```
-In Zig, declaring `var A_kk_T: [B][B]f32 = undefined;` inside `solverThreadFunc` created **local variables allocated on the thread stack**.
-With $B=50$:
-- Each $[50][50]\text{f32}$ matrix requires $10,000$ bytes.
-- The 4 matrix buffers plus temporary vectors required **$34,304$ bytes**.
-- `solver_threads[0]` stack was sized to **$8,192$ bytes**.
+#### Root cause
+Halted over JTAG, the system clock was still counting, but the only node in its timeout list (main's 10 ms sleep) was garbage: its `next` pointed into `pool_stacks[0]`, its timestamp 400 s in the future. `main_thread_storage` ends exactly where `pool_stacks` begins. A pool worker, on the C++ test's 512-element stack (4 KiB on AArch64), overflowed downward into the top of main's stack while printing: Zig's `std.fmt` in safe mode needs far more stack than C++'s `vsnprintf()`. Main's sleeping timeout node was overwritten while linked, so main never woke.
 
-When `solver_threads[0]` launched, its function prologue executed `sub sp, sp, #0x8600`, moving `sp` from `0x000f5a10` down to `0x000eb420` (over $34\text{ KB}$ below the bottom of the stack!). When the thread blocked on the spin barrier or timer tick, its saved SP was recorded at `0x000eb420`. On the next schedule, `checkClaim` tripped on `claimed sp < stack.bottom`.
-
-#### The Fix
-1. Moved all block elimination workspace buffers to module-level static storage in `.bss`:
-```zig
-var A_kk_T: [B][B]f32 = undefined;
-var A_ii: [B][B]f32 = undefined;
-var LU_ii: [B][B]f32 = undefined;
-var A_ij_temp: [B][B]f32 = undefined;
-var pivot_ii: [B]usize = undefined;
-var temp_bi: [B]f32 = undefined;
-```
-2. Increased `solver_threads` stack size to 16 KiB per core:
-```zig
-var solver_threads: [OS_NCPU]rtos.ThreadInclusive(16384) = undefined;
-```
-This reduced the stack frame of `solverThreadFunc` from $34,304$ bytes to **$944$ bytes**, completely resolving the tripwire and allowing parallel elimination to run flawlessly.
+#### The fix
+The pool and solver stacks of both matrix tests are 2048 elements (16 KiB), not C++'s 512 and 1024: a stated deviation. The solvers' block workspaces are module-level statics, as in C++ (a local `[B][B]f32` workspace on a thread stack overflowed it in an earlier version of the port, with $B=50$).
 
 ### 5.6 `c_printf.c` Format Parser & Arm CMSIS-RTOS Validator
 The Arm CMSIS-RTOS Validator prints test assertion lines with `PRINT(("TEST %02d: %-32s ", num, fn));`. The initial minimal `c_printf.c` implementation lacked support for flags (`-`, `0`, `+`, `#`) and numeric field widths (`32`, `2`). This caused format strings to emit `%02d` and `%-32s` literally and misaligned `va_arg` stack reads.
@@ -433,119 +405,76 @@ In `smp-mem-inter-test`, 20 threads exchange large memory blocks across 4 cores 
 This accelerates checksum computation by over $25\times$, allowing 100+ megabytes of RAM to be checksummed in milliseconds.
 
 ### 5.9 Dynamic Memory Heap Sizing (`dynamic_memory_size_bytes`)
-While static structures are allocated in `.bss` and thread stacks in `.stack`, dynamic heap allocations (`uos.memory.allocator()`) for FlatFs buffers (e.g. 300 KB pattern test files) and message queues require sufficient heap. `dynamic_memory_size_bytes` was increased from 256 KB to **8 MB** (`8 * 1024 * 1024`), fitting comfortably within the 64 MB heap reserve defined in `linker.ld`.
+The free store is a static 8 MB buffer (`dynamic_memory_size_bytes = 8 * 1024 * 1024`): the tests allocate their pattern files (`sd_test`, up to 300 KB), queues and pool threads from it.
+
+### 5.10 The Semihosting Console: Verdict Lines Only
+As the C++ rpi4b hardware build (`test/boards/rpi4b/include/uart.hpp`, `mirror_verdict()`), the console goes to the UART, and only a line holding `RESULT`, `FAIL` or `FATAL` (with the rest of that line when it is printed in pieces) is mirrored to semihosting, which is what the runner reads. Two reasons, both measured in C++: a semihosting call costs seconds with this probe, and OpenOCD 0.12 does not resume cores 1–3 after a semihosting call on this board. A line mirrored from core 1–3 stops that core: with every line mirrored, `smp-test2` deadlocked as soon as a worker on core 2 printed while holding the counter mutex. The full console is the UART's.
+
+### 5.11 The SD Card: EMMC2 and FatFs
+`drivers/sd.zig` is the C++ `drivers/src/sd.cpp` for this board: a polled SDHCI driver on EMMC2 (0xFE340000), PIO through the buffer data port, no DMA and no interrupts (CMD0, CMD8, ACMD41, CMD2, CMD3, CMD9, CMD7, ACMD6; single and multi-block transfers with CMD12). As the C++ `HW_BUILD` tests, the card is the Pi's boot card and is never formatted: `drivers/fatfs.zig` (the C++ `diskio_sd.cpp` and `fatfs_hw.cpp`, shared with the AArch32 port) mounts its existing FAT32 volume with FatFs R0.15a (the C `ff.c`, unchanged, `FF_USE_MKFS 0`) and keeps every test file in `/tests`.
 
 ---
 
-## 6. Comprehensive Hardware Test Results (100% Silicon Pass - All 16 Tests)
+## 6. Hardware Test Results
 
-All 16 test suites were executed on a physical Raspberry Pi 4 Model B (Rev 1.2, 4 GB) connected to a Raspberry Pi Debug Probe over JTAG.
+All 16 tests, run on 2026-10-15 on a Raspberry Pi 4 Model B, Raspberry Pi Debug Probe (CMSIS-DAP) on JTAG, `test/run-all.sh`. The time is the whole run: the OpenOCD watchdog reset, 10 s of boot, the load and the test.
 
-| Test Binary | Category | Description | Hardware Result | Elapsed Time | Verification Details |
-|---|---|---|---|---|---|
-| `smp-test0` | Real-Time Tick | Core 0 bringup, 1 kHz timer tick, MMU identity map | **PASS** | 12 s | 10 consecutive 1-second heartbeats, 0 ms jitter |
-| `smp-test1` | Preemptive Scheduler | Round-robin preemption across all 4 cores | **PASS** | 1 s | Equal execution rounds across Cores 0, 1, 2, 3 |
-| `smp-test2` | Mutex & Exclusives | Pinned threads with heavy mutex contention | **PASS** | 1 s | Exact shared counter value (8000), 0 missed locks |
-| `smp-test3` | Streaming Pipeline | Producer/consumer pipeline with IPI wakes | **PASS** | 1 s | 500 items streamed, prime classified, 0 loss |
-| `smp-test4` | Kernel Primitives | Cross-core EventFlags, Queue, Pool, CondVar, Mutex | **PASS** | 1 s | All 5 synchronization stages passed 100% |
-| `smp-mat-test` | Parallel Solver | 10-worker pool + 4-core parallel block LU ($N=200, B=50$) | **PASS** | 3 s | Max difference $\Delta x = 0.000000$ vs classical solve |
-| `mutex-stress` | High-Contention Mutex | 20s soak test with recursive/non-recursive mutexes | **PASS** | 22 s | 20s continuous lock/unlock cycles, 0 deadlock |
-| `smp-pro-cons-test` | Kernel Objects Soak | 12 threads across 4 cores, queue, pool, semaphores, condvar | **PASS** | 23 s | 20s continuous streaming, 0 CRC error, 0 pool leak |
-| `rtos-apis` | C and C++ RTOS APIs | Full test suite for threads, mutexes, semaphores, timers | **PASS** | 32 s | 20s soak verification, 100% API validation |
-| `smp-pipeline-test` | Multi-Thread FlatFs | 13 threads streaming, filtering, computing, persisting to SD | **PASS** | 23 s | 20s soak, 0 checksum error, SD integrity verified |
-| `smp-mat-sdcard-test` | SD-Backed Solver | Parallel block LU solver with matrices on SD card | **PASS** | 4 s | A.mat / b.mat on SD, 0 diff vs ground truth |
-| `cmsis-os-validator` | Official Arm Suite | Full CMSIS-RTOS Validator suite on AArch64 | **PASS** | 17 s | All CMSIS test cases passed, formatted report |
-| `sd-test` | SD Card & FlatFs | SDHCI block controller, format, 300 KB file write/read-back | **PASS** | 2 s | Byte-for-byte readback verification |
-| `smp-num-test` | Priority & SD Soak | 5 threads with explicit priorities, ACT LED, SD num.txt | **PASS** | 24 s | 20s soak, math functions, 0 read/write errors |
-| `smp-mem-test` | High-Memory Allocator | 20 workers, 10 ops, 1..512 MB blocks in 3008 MB high RAM | **PASS** | 15 s | Canary checks, `at s1e1r` guard page probes, 0 leaks |
-| `smp-mem-inter-test` | Ring Inter-Thread | 20 threads in a ring, queue lend, XOR mask, hardware CRC32 | **PASS** | 30 s | All CRCs match (`crc1 == crc2`), 0 protocol errors |
+| Test | From (C++ `test/rpi4b/`) | Result | Time |
+|---|---|---|---|
+| `smp-test0` | `smp_test0` | **PASS** | 23 s |
+| `smp-test1` | `smp_test1` | **PASS** | 24 s |
+| `smp-test2` | `smp_test2` | **PASS** | 14 s |
+| `smp-test3` | `smp_test3` | **PASS** | 25 s |
+| `smp-test4` | `smp_test4` (load balancing) | **PASS** | 23 s |
+| `smp-mat-test` | `smp-mat-test` ($N=120, B=20$) | **PASS** | 16 s |
+| `smp-pro-cons-test` | `smp-pro-cons-test` | **PASS** | 19 s |
+| `mutex-stress` | harness suite (30 s) | **PASS** | 43 s |
+| `rtos-apis` | harness suite | **PASS** | 24 s |
+| `cmsis-os-validator` | harness suite | **PASS** | 28 s |
+| `sd_test` | `sd_test` (FatFs, `/tests`) | **PASS** | 19 s |
+| `smp-num-test` | `smp-num-test` (FatFs, `tests/num.txt`) | **PASS** | 82 s |
+| `smp-pipeline-test` | `smp-pipeline-test` (FatFs, `tests/pipe.dat`) | **PASS** | 45 s |
+| `smp-mat-sdcard-test` | `smp-mat-sdcard-test` ($N=200, B=20$) | **PASS** | 17 s |
+| `smp-mem-test` | `smp_mem_test` | **PASS** | 51 s |
+| `smp-mem-inter-test` | `smp_mem_inter_test` (15 operations per thread, C++ 30) | **PASS** | 99 s |
 
-### 6.1 `smp-mat-test` Full Hardware Output ($N=200, B=50$)
-```text
-=============================================
-  Raspberry Pi 4 B - BCM2711 (4x Cortex-A72, AArch64)
-  micro-os-plus-iii  smp-mat-test (all in RAM)
-  parallel block linear solver
-  N = 200, B = 50, cores = 4
-=============================================
-core 0: releasing cores 1..3...
-core 0: releasing core 1...
-core 0: releasing core 2...
-core 0: releasing core 3...
-core 0: SMP up (c1=3 c2=3 c3=3, 0 ms).
-Starting Thread Pool of 10 worker threads...
-Submitting 20 tasks to the Thread Pool...
-Thread Pool: Worker executed task 0 on CPU 0
-Thread Pool: Worker executed task 1 on CPU 1
-Thread Pool: Worker executed task 2 on CPU 2
-Thread Pool: Worker executed task 3 on CPU 3
-...
-Thread Pool demo finished. All 20 tasks executed successfully.
+Deviations from C++, each stated in its test: the matrix tests' pool and solver stacks (§5.5); `smp-mem-inter-test`'s operation count (every run must end within 3 minutes); `smp-num-test` formats its floating-point line with `std.fmt` (the kernel's `printf` has no floating point); the kernel prints its startup banner and creates the secondary cores' idle threads itself.
 
-Generating diagonally dominant 200 x 200 matrix...
-Starting parallel 4 -core block elimination...
-Block elimination finished.
-Solving full system using classical elimination...
-Classical elimination finished.
-
-+---------------------------------------------------+
-| COMPARING BLOCK ELIMINATION VS CLASSICAL SOLVER  |
-+---------------------------------------------------+
-x[0] Block = 0.013567 | Classic = 0.013567 | Abs Diff = 0.000000
-x[1] Block = -0.008921 | Classic = -0.008921 | Abs Diff = 0.000000
-...
-x[199] Block = 0.004128 | Classic = 0.004128 | Abs Diff = 0.000000
------------------------------------------------------
-Total Absolute Difference (Sum): 0.000000
-Max Absolute Difference:        0.000000
------------------------------------------------------
-Performance Metrics:
-  Parallel Block Solver: 18420 us
-  Classical Solver:      31280 us
-  Speedup Ratio:         1.698x
-+---------------------------------------------------+
-RESULT: PASS (block == classical within tolerance)
----------------------------------------------
-```
+The OpenOCD logs (`zig-out/hw-logs/rpi4b/<test>.log`) hold the verdict line only (§5.10); the console of a run is on the UART.
 
 ---
 
-## 7. Automated Hardware Test Runner (`test/hw.sh`)
-
-To execute any test binary unattended with automatic watchdog recovery and verdict collection, use `test/hw.sh`:
+## 7. The Hardware Test Runner (`test/hw.sh`, `test/run-all.sh`)
 
 ```bash
-# Run any test binary to verdict
-./test/hw.sh rpi4b zig-out/firmware/rpi4b/smp-mat-test.elf 60
+bash test/hw.sh rpi4b zig-out/firmware/rpi4b/smp-test2.elf 180   # one test
+test/run-all.sh                                                   # all, with a verdict table
+test/run-all.sh smp-test2 sd_test                                 # some
 ```
 
 ### Script Execution Flow
-1. **Watchdog Reset**: Invokes OpenOCD with `boards/rpi4b/reset.cfg` to reboot the BCM2711.
-2. **GPU Boot Window**: Pauses 10 seconds for VideoCore to multiplex GPIO 22–27 to ALT4 JTAG.
-3. **Connect & Halt**: Halts Core 0 at `0x200` in `EL2H`.
-4. **Semihosting & HDE**: Enables ARM semihosting and asserts `EDSCR[14]` (Halting Debug Enable) on all 4 cores.
-5. **Image Load**: Rapidly transfers the ~80 KB ELF over 4 MHz JTAG in under 3 seconds.
-6. **Execution & Monitoring**: Resumes Core 0 at `0x80000` and monitors semihosting logs for `RESULT: PASS`.
-7. **Clean Exit**: Terminates OpenOCD cleanly and reports final elapsed time.
+1. **Watchdog reset**: OpenOCD with `boards/rpi4b/reset.cfg` reboots the BCM2711 (no reset line on the debug header).
+2. **Boot window**: 10 seconds for the firmware to boot from the SD card and mux GPIO 22–27 to JTAG; cores 1–3 wait in the armstub8 spin table.
+3. **Connect and halt**: core 0 halts at `0x200` in EL2h.
+4. **Semihosting and HDE**: semihosting enabled on the 4 cores, `EDSCR[14]` (halting debug enable) set.
+5. **Load**: `load_image` of the ELF.
+6. **Run**: core 0 resumes at `0x80000`; the runner follows the semihosting log until `RESULT: PASS` or `RESULT: FAIL`, at most 180 s per test.
 
 ---
 
 ## 8. Build Instructions & Repository Structure
 
 ### 8.1 Repository Layout
-- **Core Kernel**: `micro-os-plus-iii/` (Portable RTOS abstractions in Zig)
-- **AArch64 Port**: `micro-os-plus-iii-aarch64/`
-  - `boards/rpi4b/` — Linker script (`linker.ld`), boot assembly (`startup.S`), OpenOCD configs (`openocd.cfg`, `reset.cfg`)
-  - `src/` — Architecture (`arch.zig`), GICv2 (`gic.zig`), MMU identity mapper (`mmu.zig`), AAPCS64 context switcher (`port.zig`), UART (`pl011.zig`)
-  - `test/` — All 6 test suites (`smp-test0` .. `smp-test4`, `smp-mat-test`) and automated hardware runner (`hw.sh`)
+- **Kernel**: `../micro-os-plus-iii/`.
+- **AArch64 port**: `micro-os-plus-iii-aarch64/`
+  - `boards/rpi4b/`: `board.zig` (PL011, LED, secondary release), `startup.S` (EL drop, vectors, context switch, IRQ entry), `linker.ld`, `openocd.cfg`, `reset.cfg`
+  - `src/`: `arch.zig`, `gic.zig`, `mmu.zig` (the identity map and the high-memory mapper), `port.zig` (the port contract), `semihosting.zig`, `faults.zig`, `c_printf.c` (the `printf` family for the C sources)
+  - `drivers/`: `sd.zig` (EMMC2), `fatfs.zig` and `fatfs/` (FatFs), `flatfs.zig` (not used on the board)
+  - `test/`: the 16 tests, `board.zig`, `start.zig`, `hw.sh`, `run-all.sh`
 
 ### 8.2 Build Commands
 ```bash
-cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github-agy/micro-os-plus-iii-aarch64
-
-# Build all tests for Raspberry Pi 4 B
-/home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=rpi4b
-
-# Build only smp-mat-test
-/home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=rpi4b -Dtest=smp-mat-test
+cd micro-os-plus-iii-aarch64
+zig build                      # every test for the Raspberry Pi 4 B
+zig build -Dtest=smp-mat-test  # one test
 ```

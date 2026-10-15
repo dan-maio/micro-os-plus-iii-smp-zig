@@ -18,7 +18,8 @@
 //!
 //! Differences from C++: the kernel prints its startup banner and creates
 //! the secondary idle threads; the affinities are given at creation. The
-//! 512- and 1024-element stacks are used as given, as in C++.
+//! pool and solver stacks are 2048 elements, not 512 and 1024 (Zig's
+//! formatting needs more stack than C++'s; the smaller ones overflowed), as in C++.
 
 const std = @import("std");
 const uos = @import("uos");
@@ -217,7 +218,10 @@ const ThreadPool = struct {
 
 var g_pool: ThreadPool = .{};
 var pool_thread_names: [pool_size][7:0]u8 = undefined;
-var pool_stacks: [pool_size][512]uos.port.StackElement = undefined;
+// C++: 512 and 1024 elements. Zig's std.fmt in safe mode needs far more
+// stack than C++'s vsnprintf() (a pool worker overflowed 512 x 8 bytes into
+// main's stack on the board), so 2048 elements (16 KiB) each here.
+var pool_stacks: [pool_size][2048]uos.port.StackElement = undefined;
 var pool_threads: [pool_size]*rtos.Thread = undefined;
 
 fn poolWorkerFunc(arg: ?*anyopaque) ?*anyopaque {
@@ -262,7 +266,7 @@ var x_chk: [N]f32 = undefined;
 var LU_k_T: Block = undefined;
 var pivot_k_T: [B]usize = undefined;
 
-var solver_stacks: [ncpu][1024]uos.port.StackElement = undefined;
+var solver_stacks: [ncpu][2048]uos.port.StackElement = undefined;
 var solver_threads: [ncpu]*rtos.Thread = undefined;
 var solver_thread_names: [ncpu][9:0]u8 = undefined;
 

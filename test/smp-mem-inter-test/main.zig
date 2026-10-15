@@ -22,7 +22,9 @@ const console = board.console;
 pub const uos_options = board.options(4);
 
 const kWorkers: usize = 20;
-const kOps: usize = 5;
+/// C++: 30 (about 3 minutes on the board); 15 keeps a run clearly under
+/// the 3-minute limit of this port's runs.
+const kOps: usize = 15;
 const kMB: u64 = 1024 * 1024;
 const kMinBytes: u64 = 1 * kMB;
 const kMaxBytes: u64 = 512 * kMB;
@@ -453,8 +455,8 @@ fn osMain() void {
     const gpa = uos.memory.allocator();
 
     console("\n+=============================================================+\n", .{});
-    console("|  " ++ board.banner_short ++ " µOS++ SMP MEMORY + INTER-THREAD TEST |\n", .{});
-    console("|  smp-mem-inter-test                                         |\n", .{});
+    console("|  " ++ board.banner_short ++ " µOS++ SMP MEMORY + INTER-THREAD TEST     |\n", .{});
+    console("|  smp_mem_inter_test                                          |\n", .{});
     console("+=============================================================+\n\n", .{});
 
     _ = rtos.interrupts.UncriticalSection.enter();
@@ -470,7 +472,7 @@ fn osMain() void {
     console("Region 0x{x:0>8} .. 0x{x:0>8}: {d} MB, all pages unmapped\n", .{
         base, end, (end - base) / kMB,
     });
-    console("{d} threads in a ring x {d} operations, blocks of 1 .. {d} MB\n\n", .{
+    console("{d} threads in a ring (w[i] -> w[i+1]) x {d} operations, blocks of 1 .. {d} MB, every word written, XORed and CRCed\n\n", .{
         kWorkers, kOps, kMaxBytes / kMB,
     });
 

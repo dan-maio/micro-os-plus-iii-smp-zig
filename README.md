@@ -1,99 +1,93 @@
 # µOS++ IIIe for Zig — the AArch64 port
 
-The 64-bit Arm (AArch64 / ARMv8-A) architecture port of the Zig µOS++ IIIe RTOS kernel (`../micro-os-plus-iii`), targeting the Raspberry Pi 4 B (BCM2711, 4× Cortex-A72 cores, GIC-400 / GICv2, Arm Generic Timer, PL011 UART).
+The ARMv8-A (AArch64) port of the Zig µOS++ IIIe kernel
+(`../micro-os-plus-iii`), the Zig counterpart of the C++
+`micro-os-plus-iii-aarch64`, for the Raspberry Pi 4 B (BCM2711, 4× Cortex-A72,
+GIC-400, generic timer, PL011 UART). Threads run at EL1h with a full AAPCS64
+frame (x0–x30, ELR, SPSR, FPSR, FPCR, q0–q31, 800 bytes); the tick is each
+core's generic timer, the IPI a GIC SGI, the kernel lock an `ldaxr`/`stlxr`
+spin lock; a switched-out context becomes claimable by another core only
+once the stack pointer has left it.
 
-Tested on QEMU `raspi4b` (QEMU 9.2.4) and compatible with bare-metal SD boot / U-Boot.
-
-## Overview & Architecture
-
-- **Execution Level**: EL1h (Kernel/OS privilege, dedicated EL1 SP). Drops cleanly from EL3 or EL2 if entered via firmware/QEMU boot.
-- **MMU & Caching**: Identity-mapped 4 GB address space with 2 MB Level-1 block descriptors (TCR_EL1, TTBR0_EL1, MAIR_EL1).
-  - DRAM (`0x00080000 .. 0x3B3FFFFF`): Normal memory, Inner/Outer Write-Back Cacheable, Inner-Shareable (`MAIR_ATTR0 = 0xFF`).
-  - Device MMIO (`0xFC000000 .. 0xFFFFFFFF`): Device-nGnRnE memory, Execute-Never (`MAIR_ATTR1 = 0x04`).
-- **Context Frame**: 800-byte full AAPCS64 context frame saving `x0`–`x30`, `ELR_EL1`, `SPSR_EL1`, `FPSR`, `FPCR`, and 128-bit SIMD/FP registers `q0`–`q31`.
-- **SMP Concurrency & Locking**:
-  - Spinlock using exclusive load/store (`ldaxr` / `stlxr`) with `wfe` / `sev`.
-  - Secondary core boot via spin-table release (`0xD8 + 8 * core`, cache cleaned via `dc cvac`, woken via `sev`).
-  - Deferred SMP publish mechanism (`SMP_PUBLISH`) guaranteeing memory barrier ordering before core state transitions.
-- **Interrupts & Timer**:
-  - ARM Generic Timer physical timer (`CNTP_CTL_EL0`, `CNTP_TVAL_EL0`, `CNTPCT_EL0`) delivering 1 kHz system ticks via GIC PPI 30.
-  - GIC-400 distributor & CPU interface (`GICD` @ `0xFF841000`, `GICC` @ `0xFF842000`).
-  - Inter-Processor Interrupts (IPI) via GIC SGI 0 (`GICD_SGIR`) for cross-core rescheduling and thread resumption.
-- **Semihosting & Console**:
-  - AArch64 semihosting trap (`hlt #0xF000`) for test termination (`SYS_EXIT` = `0x18`) with exit code passing (`ADP_Stopped_ApplicationExit`).
-  - Dual-output UART0 / PL011 @ `0xFE201000` for console trace.
+The design, the board's particularities and the test results are in
+[docs/rpi4b-aarch64-smp-port-architecture-and-internals.md](docs/rpi4b-aarch64-smp-port-architecture-and-internals.md)
+(also as a PDF).
 
 ## Requirements
 
-- **Zig**: 0.17.0 (`/home/dan/zig-x86_64-linux-0.17.0/zig`).
-- **Kernel**: `../micro-os-plus-iii`.
-- **QEMU**: `qemu-system-aarch64` (v9.x+ with `-M raspi4b -smp 4`).
+- Zig 0.17.0.
+- The kernel, `../micro-os-plus-iii`.
+- OpenOCD (the xPack) and a CMSIS-DAP probe on the Pi's JTAG pins (GPIO
+  22–27), e.g. the Raspberry Pi Debug Probe (`2e8a:000c`).
+- An SD card in the Pi with its firmware and a `config.txt` that enables
+  the UART and JTAG and leaves cores 1–3 in the armstub8 spin table (the
+  C++ port's `test/boards/rpi4b/config.txt`). The SD tests mount its EXISTING
+  FAT32 volume and write only in `/tests`; it is never formatted.
+- For `cmsis-os-validator`: the `@xpacks/arm-cmsis-rtos-validator` xPack
+  (`~/.local/xPacks/...` or `-Dcmsis_rv=<folder>`).
 
-## Build and Run
-
-To build all firmware images or a specific test:
-
-```sh
-# Build a specific test
-zig build -Dtest=smp-test0
-zig build -Dtest=smp-test1
-zig build -Dtest=smp-test2
-zig build -Dtest=smp-test3
-zig build -Dtest=smp-test4
-zig build -Dtest=smp-mat-test
-
-# Output files land in:
-#   zig-out/firmware/rpi4b/<test>.elf
-#   zig-out/firmware/rpi4b/<test>.img
-```
-
-To run with QEMU:
+## Build and run
 
 ```sh
-qemu-system-aarch64 \
-  -M raspi4b \
-  -smp 4 \
-  -nographic \
-  -monitor none \
-  -serial stdio \
-  -semihosting-config enable=on,target=native \
-  -kernel zig-out/firmware/rpi4b/smp-test1.elf
+zig build                                     # every test
+zig build -Dtest=smp-test2                    # one test
+bash test/hw.sh rpi4b zig-out/firmware/rpi4b/smp-test2.elf 180   # run it
+test/run-all.sh                               # all of them, with a verdict table
+test/run-all.sh smp-test2 sd_test             # some of them
 ```
 
-## Test Suite Status
+The images land in `zig-out/firmware/rpi4b/<test>.elf` (and `.img`). Each
+run resets the Pi through its watchdog (OpenOCD), waits 10 s for it to boot,
+halts core 0, loads the ELF and resumes it at 0x80000, then follows the
+semihosting log until `RESULT: PASS` or `RESULT: FAIL`, at most 180 s. No
+power cycle is needed between tests.
 
-| Test | Description | Result |
+As the C++ rpi4b hardware build, only the verdict lines (`RESULT`, `FAIL`,
+`FATAL`) go through semihosting: a semihosting call costs seconds with this
+probe, and OpenOCD 0.12 does not resume cores 1–3 after one on this board.
+The whole console is on the UART (115200 8N1, GPIO 14/15). The logs are
+`zig-out/hw-logs/rpi4b/<test>.log`.
+
+## Tests
+
+Faithful ports of the C++ `test/rpi4b/` tests (the same banners and lines,
+structure and verdict); the deviations are stated in each `main.zig`. All
+pass on the board (2026-10-15):
+
+| Test | From (C++) | Raspberry Pi 4 B |
 | --- | --- | --- |
-| `smp-test0` | Single-core heartbeat (1 kHz tick, generic timer, MMU, PL011 UART) | **PASS** (10 exact 1-second heartbeats on Core 0) |
-| `smp-test1` | 4-core SMP bringup & cross-core semaphore ping-pong (Core 0 <-> Core 1 with Core 2 logger) | **PASS** (650,000+ rounds across cores) |
-| `smp-test2` | 4-core lock coherency & atomic counter under mutex contention | **PASS** (Exact 8000 increments across 4 cores) |
-| `smp-test3` | Cross-core pipeline & IPI thread wakeup (producer on Core 0, prime filter on Core 1, logger on Core 2) | **PASS** (500 items processed & classified) |
-| `smp-test4` | Multi-primitive cross-core stress (EventFlags, two-way MessageQueue, MemoryPool, CondVar, Mutex) | **PASS** (50 rounds per primitive across cores) |
-| `smp-mat-test` | Parallel block Gaussian elimination solver (Core 0 + Core 1 helper) vs serial ground truth | **PASS** (`max \|dx\| = 0e0`) |
+| `smp-test0` | `smp_test0` | PASS |
+| `smp-test1` | `smp_test1` | PASS |
+| `smp-test2` | `smp_test2` | PASS |
+| `smp-test3` | `smp_test3` | PASS |
+| `smp-test4` | `smp_test4` (load balancing) | PASS |
+| `smp-mat-test` | `smp-mat-test` (N = 120, B = 20) | PASS |
+| `smp-pro-cons-test` | `smp-pro-cons-test` | PASS |
+| `mutex-stress` | harness suite | PASS |
+| `rtos-apis` | harness suite | PASS |
+| `cmsis-os-validator` | harness suite | PASS |
+| `sd_test` | `sd_test` (FatFs in `/tests`) | PASS |
+| `smp-num-test` | `smp-num-test` (FatFs, `tests/num.txt`) | PASS |
+| `smp-pipeline-test` | `smp-pipeline-test` (FatFs, `tests/pipe.dat`) | PASS |
+| `smp-mat-sdcard-test` | `smp-mat-sdcard-test` (N = 200, B = 20) | PASS |
+| `smp-mem-test` | `smp_mem_test` | PASS |
+| `smp-mem-inter-test` | `smp_mem_inter_test` (15 operations per thread; C++ 30) | PASS |
 
-## Repository Structure
+The harness suites run as the C++ rpi4b harness platform runs them: 4
+cores (1–3 released first), an 8192-element main stack.
 
-```
-.
-├── boards/
-│   └── rpi4b/
-│       ├── board.zig       # BCM2711 peripheral map, PL011, secondary core release
-│       ├── linker.ld       # Memory sections, 64-bit alignments, EL1 stack tops
-│       └── startup.S       # Drop from EL3/EL2 -> EL1h, vector table, context switch, IRQ
-├── src/
-│   ├── arch.zig            # AArch64 system registers, barrier instructions, spinlocks
-│   ├── faults.zig          # ESR_EL1, ELR_EL1, FAR_EL1 fault decoder & register dumper
-│   ├── gic.zig             # GIC-400 distributor & CPU interface drivers, SGI/PPI config
-│   ├── mmu.zig             # 4 GB identity-mapping MMU page tables (Level 1 2MB blocks)
-│   ├── port.zig            # Implementation of kernel's port_contract.zig
-│   └── semihosting.zig     # HLT #0xF000 AArch64 semihosting trap & SYS_EXIT
-└── test/
-    ├── board.zig           # Board test configuration & memory parameters
-    ├── start.zig           # Test startup trampoline
-    ├── smp-test0/          # Test 0 entry point
-    ├── smp-test1/          # Test 1 entry point
-    ├── smp-test2/          # Test 2 entry point
-    ├── smp-test3/          # Test 3 entry point
-    ├── smp-test4/          # Test 4 entry point
-    └── smp-mat-test/       # Parallel matrix solver entry point
-```
+## Layout
+
+| Path | Contents |
+| --- | --- |
+| `src/port.zig` | the port contract: frame, context switch, kernel lock, GIC tick and IPI, secondaries, clocks, trace, termination |
+| `src/arch.zig`, `src/gic.zig`, `src/mmu.zig` | system registers and barriers; the GIC-400; the identity map and the high-memory mapper |
+| `src/semihosting.zig`, `src/faults.zig`, `src/c_printf.c` | `hlt #0xF000` semihosting; the exception reports; the `printf` family for C code |
+| `boards/rpi4b/` | `board.zig`, `startup.S`, `linker.ld`, `openocd.cfg`, `reset.cfg` |
+| `drivers/` | `sd.zig` (EMMC2 SDHCI), `fatfs.zig` and `fatfs/` (FatFs R0.15a, C, unchanged) |
+| `test/` | the tests, `board.zig`, `start.zig`, `hw.sh`, `run-all.sh` |
+
+## Licence
+
+MIT, as µOS++; see `LICENSE`. FatFs (`drivers/fatfs/`) has its own licence,
+`drivers/fatfs/LICENSE.txt`.
