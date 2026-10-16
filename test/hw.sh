@@ -17,6 +17,7 @@
 #   weactf412              an ST-Link (as the C++ board), SWD, 1000 kHz
 #   nucleof411             the on-board ST-Link
 #   pico, pico2            the Raspberry Pi Debug Probe (2e8a:000c)
+#   pico2-rp2350b-psram    its CMSIS-DAP (c251:f001), as the C++ board
 #
 # Pico 2: `reset init` (not `reset`) re-runs the bootrom/XIP setup, and cm1
 # is resumed before cm0 so that core 1 waits in the bootrom launch loop and
@@ -73,6 +74,26 @@ case "$BOARD" in
     [[ -n "$KHZ" ]] && CFG+=(-c "adapter speed $KHZ")
     RUN=(-c "init" -c "reset halt" -c "program \"$ELF\" verify"
          -c "arm semihosting enable" -c "reset run")
+    ;;
+  pico2-rp2350b-psram)
+    # As the C++ board (test/boards/pico2-rp2350b-psram/openocd.cfg): its
+    # CMSIS-DAP (c251:f001), the 16 MB flash, both cores. 500 kHz, not the
+    # C++ 1000: at 1000 the SWD link was lost twice soon after core 1
+    # started ("cannot read IDR"), at 500 it held (2026-10-16).
+    CFG=(-f interface/cmsis-dap.cfg -c "cmsis-dap vid_pid ${OCD_PROBE:-0xc251 0xf001}" -c "adapter speed ${KHZ:-500}"
+         -c "set FLASHSIZE 0x1000000" -c "set USE_CORE { cm0 cm1 }" -c "set USE_SMP 0" -f target/rp2350.cfg)
+    # The smp-test-nested-clock tests keep the selected clock-table row in
+    # the watchdog scratch registers (SCRATCH0 = row, SCRATCH1 = magic),
+    # which only a power-on clears; with a row there every reset boots
+    # straight into that clock (250 MHz, 1.25 V...), and `reset init` then
+    # timed out on core 1. Clear them first, so each run starts as a cold
+    # boot (48 MHz) does.
+    RUN=(-c "init"
+         -c "targets rp2350.cm0" -c "catch {halt 1000}"
+         -c "catch {mww 0x400d8010 0}" -c "catch {mww 0x400d800c 0}"
+         -c "reset init" -c "program \"$ELF\" verify" -c "reset init"
+         -c "targets rp2350.cm1" -c "arm semihosting enable" -c "resume"
+         -c "targets rp2350.cm0" -c "arm semihosting enable" -c "resume")
     ;;
   pico2)
     CFG=(-f interface/cmsis-dap.cfg "${PROBE_ARGS[@]}" -c "adapter speed ${KHZ:-5000}"

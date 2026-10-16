@@ -28,6 +28,8 @@ pub const BoardId = enum {
     pico,
     /// Raspberry Pi Pico 2, RP2350, 2x Cortex-M33 (SMP).
     pico2,
+    /// WeAct RP2350B core board, 16 MB flash + 8 MB PSRAM, 2x Cortex-M33 (SMP).
+    @"pico2-rp2350b-psram",
 };
 
 pub const Board = struct {
@@ -42,6 +44,7 @@ pub const boards = [_]Board{
     .{ .id = .weactf412, .source = "src/boards/weactf412.zig", .ncpu = 1 },
     .{ .id = .pico, .source = "src/boards/pico.zig", .ncpu = 2 },
     .{ .id = .pico2, .source = "src/boards/pico2.zig", .ncpu = 2 },
+    .{ .id = .@"pico2-rp2350b-psram", .source = "src/boards/pico2-rp2350b-psram.zig", .ncpu = 2 },
 };
 
 fn boardTarget(mb: *MicroBuild, id: BoardId) *const microzig.Target {
@@ -51,6 +54,8 @@ fn boardTarget(mb: *MicroBuild, id: BoardId) *const microzig.Target {
         .weactf412 => mb.ports.stm32.chips.STM32F412RE,
         .pico => mb.ports.rp2xxx.boards.raspberrypi.pico,
         .pico2 => mb.ports.rp2xxx.boards.raspberrypi.pico2_arm,
+        // An RP2350B with 16 MB of flash, as the WeAct board.
+        .@"pico2-rp2350b-psram" => mb.ports.rp2xxx.boards.adafruit.metro_rp2350,
     };
 }
 
@@ -118,6 +123,20 @@ const board_tests = [_]struct { board: BoardId, name: []const u8 }{
     .{ .board = .weactf412, .name = "mos-test1" },
     .{ .board = .weactf412, .name = "uart-test1" },
     .{ .board = .pico2, .name = "smp-test-usb-cdc-acm" },
+    .{ .board = .@"pico2-rp2350b-psram", .name = "smp-test0" },
+    .{ .board = .@"pico2-rp2350b-psram", .name = "smp-test1" },
+    .{ .board = .@"pico2-rp2350b-psram", .name = "smp-test2" },
+    .{ .board = .@"pico2-rp2350b-psram", .name = "smp-test3" },
+    .{ .board = .@"pico2-rp2350b-psram", .name = "smp-test4" },
+    .{ .board = .@"pico2-rp2350b-psram", .name = "smp-test5" },
+    .{ .board = .@"pico2-rp2350b-psram", .name = "sc-test-ko" },
+    .{ .board = .@"pico2-rp2350b-psram", .name = "smp-test-ko" },
+    .{ .board = .@"pico2-rp2350b-psram", .name = "exc-test" },
+    .{ .board = .@"pico2-rp2350b-psram", .name = "smp-mat-test" },
+    .{ .board = .@"pico2-rp2350b-psram", .name = "smp-test-nested" },
+    .{ .board = .@"pico2-rp2350b-psram", .name = "smp-test-nested-clock_250" },
+    .{ .board = .@"pico2-rp2350b-psram", .name = "smp-test-nested-clock_200" },
+    .{ .board = .@"pico2-rp2350b-psram", .name = "smp-test-nested-clock" },
 };
 
 fn testRoot(b: *std.Build, board: BoardId, name: []const u8) std.Build.LazyPath {
@@ -159,7 +178,11 @@ const tests = [_]Test{
     .{ .name = "spi-pipeline", .only = &.{.weactf411} },
     .{ .name = "mos-test1", .only = &.{ .weactf411, .nucleof411, .weactf412 } },
     .{ .name = "uart-test1", .only = &.{.weactf412} },
-    .{ .name = "smp-test-usb-cdc-acm", .smp_only = true },
+    .{ .name = "smp-test-nested", .only = &.{.@"pico2-rp2350b-psram"} },
+    .{ .name = "smp-test-nested-clock_250", .only = &.{.@"pico2-rp2350b-psram"} },
+    .{ .name = "smp-test-nested-clock_200", .only = &.{.@"pico2-rp2350b-psram"} },
+    .{ .name = "smp-test-nested-clock", .only = &.{.@"pico2-rp2350b-psram"} },
+    .{ .name = "smp-test-usb-cdc-acm", .only = &.{ .pico, .pico2 } },
 };
 
 pub const FirmwareOptions = struct {

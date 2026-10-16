@@ -12,6 +12,7 @@ Cortex-M0+) and RP2350 (two Cortex-M33, SIO spinlocks and FIFO IPIs).
 | --- | --- | --- | --- |
 | `pico2` | Raspberry Pi Pico 2 (RP2350) | 2× Cortex-M33F, SMP | Raspberry Pi Debug Probe (`2e8a:000c`) |
 | `pico` | Raspberry Pi Pico (RP2040) | 2× Cortex-M0+, SMP | Raspberry Pi Debug Probe (`2e8a:000c`) |
+| `pico2-rp2350b-psram` | WeAct RP2350B core board, 16 MB flash + 8 MB PSRAM | 2× Cortex-M33F, SMP | its CMSIS-DAP (`c251:f001`), SWD at 500 kHz |
 | `weactf411` | WeAct Black Pill (STM32F411CE) | Cortex-M4F | WCH-Link in ARM mode (`1a86:8011`) |
 | `nucleof411` | ST Nucleo-F411RE (STM32F411RE, HSI 16 MHz) | Cortex-M4F | the integrated ST-Link (`0483:374b`) |
 | `weactf412` | WeAct STM32F412RE core board (HSE 8 MHz, 100 MHz) | Cortex-M4F | an ST-Link (SWD, 1000 kHz), as the C++ board |
@@ -93,6 +94,31 @@ and `rtos-apis` prints from a 1 ms periodic timer callback. The F412's
 console is the C++ board's driver (`src/boards/stm32f4_uart_dma.zig`):
 RXNE-interrupt reception and DMA2 Stream7 transmission, with RTOS
 semaphores; the trace uses it without ever blocking.
+
+### The WeAct RP2350B PSRAM board
+
+`-Dboard=pico2-rp2350b-psram`, the C++ `test/pico2-rp2350b-psram/` tests
+(`test/pico2-rp2350b-psram/<test>/`); console on UART0 GPIO12/13. All pass
+on the board (2026-10-16):
+
+| Test | From (C++) | WeAct RP2350B PSRAM |
+| --- | --- | --- |
+| `smp-test0` … `smp-test5`, `smp-test-ko`, `sc-test-ko`, `exc-test`, `fp-switch` | as the Pico 2's, the board's banner | PASS |
+| `smp-mat-test` | N = 300, B = 50, the matrices in the PSRAM | PASS, speedup 9.56× |
+| `smp-test-nested` | nested interrupts (UART0 / TIMER0 alarms 2, 3), lock-free trace, handlers in RAM | PASS |
+| `smp-test-nested-clock`, `_200`, `_250` | the same with the from-scratch clock table (48..200 / 250 MHz, chosen with the potentiometer on GPIO40 and 'y' on the console, a watchdog reboot into the clock), a block solver in the PSRAM (N = 1000 / 500 / 800) | PASS (interactive; judged on the console after a clock reboot) |
+
+The board's pieces: `src/boards/pico2-rp2350b-psram.zig` (MicroZig's
+RP2350B 16 MB target, a run-time clock and baud), `rp2350_psram.zig` (the C++
+`psram.cpp`, run from SRAM), `rp2350_clocks.zig` (the C++ `clocks.cpp` table
+and reboot), `rp2350_adc.zig`. Deviations: the PSRAM is initialised by the
+tests (C++: boot.S), so only the solvers' arrays live in it (C++: all of
+`.data`/`.bss`); `smp-test3` and `exc-test` follow the current Pico 2 copies
+(the C++ PSRAM ones are the older versions); `hw.sh` runs SWD at 500 kHz (the
+C++ 1000 lost the link) and clears the clock-table watchdog scratch before
+`reset init` (a row left there boots every reset into that clock, and the
+reset then times out). A clock reboot can knock this probe off USB, so after
+one the verdict is read on the console.
 
 The harness suites run as in the C++ pico2 harness build: one CPU, with the
 suite's `os-app-config.h` values in `uos_options`. Their C parts are the

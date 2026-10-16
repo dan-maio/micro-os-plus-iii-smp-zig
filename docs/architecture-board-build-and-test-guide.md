@@ -875,12 +875,15 @@ cd micro-os-plus-iii-aarch32
 /home/dan/zig-x86_64-linux-0.17.0/zig build -Dtest=smp-test2
 ```
 
-#### D. Cortex-M (`micro-os-plus-iii-cortexm` — Pico 2, Pico, WeAct Black Pill STM32F411, Nucleo-F411RE, WeAct STM32F412RE)
+#### D. Cortex-M (`micro-os-plus-iii-cortexm` — Pico 2, Pico, WeAct RP2350B PSRAM, WeAct Black Pill STM32F411, Nucleo-F411RE, WeAct STM32F412RE)
 ```bash
 cd micro-os-plus-iii-cortexm
 
 # Build all tests for Raspberry Pi Pico 2 (RP2350, 2x Cortex-M33 SMP):
 /home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=pico2
+
+# Build all tests for the WeAct RP2350B core board (16 MB flash + 8 MB PSRAM, 2x Cortex-M33 SMP):
+/home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=pico2-rp2350b-psram
 
 # Build all tests for Raspberry Pi Pico (RP2040, 2x Cortex-M0+ SMP):
 /home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=pico
@@ -1119,6 +1122,7 @@ cd micro-os-plus-iii-aarch32
 cd micro-os-plus-iii-cortexm
 ./test/hw.sh pico2 zig-out/firmware/pico2/smp-test2.elf 120
 ./test/hw.sh pico zig-out/firmware/pico/smp-test2.elf 120
+./test/hw.sh pico2-rp2350b-psram zig-out/firmware/pico2-rp2350b-psram/smp-mat-test.elf 180
 ./test/hw.sh weactf411 zig-out/firmware/weactf411/rtos-apis.elf 120
 ./test/hw.sh nucleof411 zig-out/firmware/nucleof411/mos-test1.elf 120
 ./test/hw.sh weactf412 zig-out/firmware/weactf412/uart-test1.elf 120
