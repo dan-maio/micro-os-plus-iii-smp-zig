@@ -62,7 +62,8 @@ The Zig port of **µOS++ IIIe** separates the portable, architecture-independent
 │  │ micro-os-plus-iii-       │  │ ARMv6-M / ARMv7-M / ARMv8-M Port       │  │
 │  │ cortexm/                 │  │ • RP2350 Pico 2 (2x Cortex-M33 SMP)    │  │
 │  │                          │  │ • RP2040 Pico   (2x Cortex-M0+ SMP)    │  │
-│  │                          │  │ • STM32F411/412 (Single Cortex-M4F)    │  │
+│  │                          │  │ • STM32F411 WeAct, Nucleo; STM32F412   │  │
+│  │                          │  │   WeAct (single Cortex-M4F)            │  │
 │  └──────────────────────────┘  └────────────────────────────────────────┘  │
 │  ┌──────────────────────────┐  ┌────────────────────────────────────────┐  │
 │  │ micro-os-plus-iii-       │  │ ARMv7-A (AArch32) SMP Port             │  │
@@ -74,15 +75,14 @@ The Zig port of **µOS++ IIIe** separates the portable, architecture-independent
 │  └──────────────────────────┘  └────────────────────────────────────────┘  │
 │  ┌──────────────────────────┐  ┌────────────────────────────────────────┐  │
 │  │ micro-os-plus-iii-       │  │ Synthetic POSIX SMP Port (Linux Host)  │  │
-│  │ posix-arch/              │  │ • pthreads + ucontext + POSIX timers   │  │
+│  │ posix-arch/              │  │ • host threads + ucontext + timers     │  │
 │  └──────────────────────────┘  └────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Key architectural principles:
-
 1. **The kernel never builds standalone firmware on its own**: Just like the C++ edition, `micro-os-plus-iii` is imported as a Zig package dependency by an architecture port (or user application).
-2. **Mutual compile-time binding (`uos` ↔ `uos_port`)**: The kernel imports the architecture port as `@import("uos_port")`, and the port imports the kernel as `@import("uos")`. They are wired together in `build.zig` via `uos_build.createModule()`.
+2. **Mutual compile-time binding (`uos` ↔ `uos_port`)**: The kernel imports the architecture port as `@import("uos_port")`, and the port imports the kernel as `@import("uos")`. They are wired together in `build.zig` by the kernel's build helpers: `uos_build.createModule(b, kernel_dep, .{ .port = port_mod, ... })` creates `uos` and calls `linkPort()`, which adds the two imports.
 3. **Compile-time contract verification**: The kernel validates every declaration of `uos_port` at compile time via `src/port_contract.zig`.
 
 ---
@@ -107,14 +107,15 @@ micro-os-plus-iii-<arch>/
 ├── src/                       # Architecture port layer (shared across boards)
 │   ├── port.zig               # Root of `uos_port` — implements port_contract
 │   ├── arch.zig               # Inline asm: barriers, IRQ mask, timer & CPU ID
-│   ├── gic.zig                # Interrupt controller driver (GIC / PLIC / NVIC)
-│   ├── mmu.zig                # MMU / MPU page tables & cache maintenance
-│   ├── semihosting.zig        # Trap interface (SYS_WRITE0, SYS_EXIT)
-│   ├── faults.zig             # Exception syndrome decoder & crash register dump
+│   ├── gic.zig                # Interrupt controller driver (GIC-400)
+│   ├── mmu.zig                # MMU page tables & cache maintenance
+│   ├── semihosting.zig        # The trap (`call`) for `uos.semihosting`
+│   ├── faults.zig             # Exception syndrome decoder & register dump
 │   └── c_printf.c             # Optional freestanding C11 printf/vsnprintf
-├── drivers/                   # Optional storage/peripheral drivers for I/O tests
-│   ├── sd.zig                 # SD/MMC block device driver (or RAM-disk)
-│   └── flatfs.zig             # FlatFs / FatFs filesystem layer over `sd.zig`
+├── drivers/                   # Optional storage drivers for the SD tests
+│   ├── sd.zig                 # SD card (EMMC2 SDHCI / RK3506 DW-MMC)
+│   ├── fatfs.zig              # FatFs glue: disk_*, mount, files in /tests
+│   └── fatfs/                 # FatFs R0.15a, C, unchanged
 ├── boards/                    # One subdirectory per supported hardware board
 │   └── <board_name>/          # e.g., rpi4b, luckfox-lyra
 │       ├── board.zig          # `uos_board` root: MMIO, UART, LED, SMP release
@@ -127,15 +128,15 @@ micro-os-plus-iii-<arch>/
     ├── board.zig              # `board` helper: console lock, SMP join, hw_result
     ├── hw.sh                  # Automated OpenOCD runner & semihosting monitor
     ├── smp-test0/
-    │   └── main.zig           # Test 0: Single-core bringup, UART, MMU, 1kHz tick
+    │   └── main.zig           # Test 0: bring-up on CPU 0, ten heartbeats
     ├── smp-test1/
-    │   └── main.zig           # Test 1: Multi-core SMP bringup & preemption
+    │   └── main.zig           # Test 1: semaphore ping-pong across CPUs
     ├── smp-test2/
-    │   └── main.zig           # Test 2: SMP mutex stress & atomic exclusives
+    │   └── main.zig           # Test 2: kernel lock coherency, one mutex
     ├── smp-test3/
-    │   └── main.zig           # Test 3: Cross-core message queue pipeline
+    │   └── main.zig           # Test 3: message queue across CPUs
     ├── smp-test4/
-    │   └── main.zig           # Test 4: EventFlags, MemPool, CondVar, Semaphores
+    │   └── main.zig           # Test 4: load balancing without affinity
     └── ...                    # Matrix, SD card, high-memory & validator suites
 ```
 
@@ -151,10 +152,10 @@ micro-os-plus-iii-<arch>/
 | `src/arch.zig` | *(internal)* | Wraps CPU instructions (`dsb`, `dmb`, `isb`, `wfi`, `wfe`, `sev`, IRQ enable/disable, CPU ID read from `MPIDR_EL1` / `mhartid`, hardware counter read). |
 | `src/gic.zig` | *(internal)* | Initializes the interrupt controller distributor and per-CPU interfaces; routes the timer PPI and Software Generated Interrupts (SGI) for SMP reschedule IPIs. |
 | `src/mmu.zig` | *(internal)* | Builds identity-mapped translation tables (Normal WB/WA Inner-Shareable for RAM, Device-nGnRnE for MMIO) and exports `mmu_init` and `mmu_enable` to `startup.S`. |
-| `src/semihosting.zig` | *(internal)* | Implements buffered semihosting output (`SYS_WRITE0`) and target termination (`SYS_EXIT` with `ADP_Stopped_ApplicationExit = 0x20026`) so OpenOCD/QEMU receive test verdicts. |
-| `src/faults.zig` | *(internal)* | Exports `uos_fault_handler` called by `startup.S` on unhandled exceptions; prints CPU ID, exception syndrome, faulting PC (`ELR`), fault address (`FAR`), and exits with failure. |
+| `src/semihosting.zig` | *(internal)* | The semihosting trap (`hlt #0xF000` on AArch64, `svc 0x123456` on AArch32, `bkpt 0xAB` on Cortex-M) as `semihosting.call(op, arg)` and `exit_by_block`, for the kernel's `uos.semihosting` (every operation, SYS_EXIT with `ADP_Stopped_ApplicationExit = 0x20026`); the console mirror. |
+| `src/faults.zig` | *(internal)* | The exception reporters called from the vectors (AArch64 `port_fatal_exception`; AArch32 `handle_undefined_instruction`, `handle_prefetch_abort`, `handle_data_abort`): CPU, syndrome, faulting PC, fault address, registers; then a halt. |
 | `test/start.zig` | `root` | Root source file of every firmware executable. Re-exports `pub const uos_options = app.uos_options;`, configures `std_options` logging to `uos.trace.logFn`, defines a frame-unwinding `panic` handler, and invokes `app.main()`. |
-| `test/board.zig` | `board` | Imported by tests as `@import("board")`. Provides `board.options(ncpu)`, thread-safe `board.console()`, `board.smp.startSecondaryCores()`, `board.smp.waitSecondaries()`, and `board.hw_result.ok()` / `fail()`. |
+| `test/board.zig` | `board` | Imported by tests as `@import("board")`. Provides `board.options(ncpu)`, the console and its mutex, the secondary CPU release and join helpers, and `board.hw_result.ok()` / `fail()` (both `uos.rtos.terminate(code)`). |
 
 ---
 
@@ -168,13 +169,13 @@ const uos = @import("uos");
 const board = @import("uos_board");
 
 // 1. Stack configuration
-pub const StackElement = u64;        // u64 on 64-bit arches, u32 on 32-bit arches
-pub const stack_alignment: usize = 16; // 16-byte on AArch64/x86_64, 8-byte on ARM32
+pub const StackElement = u64; // u64 on 64-bit arches, u32 on 32-bit arches
+pub const stack_alignment: usize = 16; // 16-byte SP alignment on AArch64/x86_64, 8-byte on ARM32/Cortex-M
 pub const stack_magic: StackElement = 0xDEAD_BEEF_CAFE_BABE;
 
 // 2. Per-thread saved context
 pub const Context = struct {
-    /// Saved stack pointer when switched out; `null` while active on a CPU!
+    /// Saved stack pointer when switched out; `null` while actively executing on a CPU!
     stack_ptr: ?[*]StackElement = null,
 };
 
@@ -188,7 +189,7 @@ pub fn contextCreate(
     // Carve an initial Frame at the top of `stack`, populate:
     //   - argument register (r0 / x0 / a0) = @intFromPtr(arg)
     //   - return address / PC (ELR_EL1 / LR / mepc) = @intFromPtr(entry)
-    //   - processor state (SPSR / xPSR / mstatus) = IRQs enabled, privileged mode
+    //   - processor state (SPSR / xPSR / mstatus) = interrupts enabled, target privilege mode
     //   - ctx.stack_ptr = pointer to the constructed frame
 }
 
@@ -220,11 +221,11 @@ pub const interrupts = struct {
 pub const scheduler = struct {
     pub fn initialize() void {}
     pub fn start() noreturn {
-        // Initialize GIC/PLIC, start timers, switch Core 0 into the first
-        // ready thread, and never return.
+        // Initialize GIC/PLIC, start timers, switch Core 0 into the first ready thread,
+        // and never return.
     }
     pub fn setLocked(locked: bool) bool {
-        // Acquire or release the recursive SMP kernel spinlock
+        // Acquire or release the recursive SMP kernel spinlock (or scheduler lock)
     }
     pub fn isLocked() bool {
         // Return true if the current CPU holds the kernel lock
@@ -274,6 +275,16 @@ pub const trace = struct {
 pub fn interruptStack() ?[]StackElement {
     return null;
 }
+
+// 9. Optional: end the run (`uos.rtos.terminate()` calls it last)
+pub fn terminate(code: u8) noreturn { ... }
+
+// 10. Optional: the semihosting trap, for the kernel's `uos.semihosting`
+pub const semihosting = struct {
+    pub fn call(op: usize, arg: usize) usize { ... } // HLT / SVC / BKPT
+    pub const exit_by_block: bool = true;            // SYS_EXIT takes a block (AArch64, AArch32) or the code (Cortex-M)
+    pub fn attached() bool { ... }                   // optional: a debugger is there
+};
 ```
 
 ---
@@ -282,17 +293,18 @@ pub fn interruptStack() ?[]StackElement {
 
 The portable kernel scheduler (`micro-os-plus-iii/src/rtos/scheduler.zig`) manages ready lists, thread priorities, CPU affinities, and sleeping timers. The port connects to the kernel through two callbacks:
 
-1. **Tick Advancement**: Inside your timer interrupt handler:
+1. **Tick Advancement**: Inside your timer interrupt handler, on CPU 0 only (the other CPUs' ticks only request a reschedule):
    ```zig
-   uos.rtos.clocks.sysTickHandler();
+   if (cpu == 0) uos.rtos.clocks.sysTickHandler();
    ```
-2. **Thread Context Selection**: Inside your cooperative switcher (`uos_switch_context`) and IRQ exit path (`uos_irq_handler`):
+2. **Thread Selection**: Inside the port's switch routine, with the interrupts masked and the kernel lock held:
    ```zig
-   const next_sp = uos.rtos.scheduler.internalSwitchThreads(current_sp);
+   uos.rtos.scheduler.internalSwitchThreads(); // no arguments, no result
+   const new_thread = uos.rtos.scheduler.current_thread[cpu].?;
    ```
-   - On entry, `current_sp` is the stack pointer where the outgoing thread's register frame was just pushed.
-   - `internalSwitchThreads` saves `current_sp` into the outgoing thread's `context.stack_ptr`, selects the highest-priority ready thread eligible for this CPU, sets its `context.stack_ptr = null` (marking it claimed/active in registers), and returns `next_sp`.
-   - On SMP systems, storing `current_sp` into `old.context.stack_ptr` must be **deferred** until *after* the assembly routine has finished reading the outgoing stack and switched `SP` to `next_sp` (via per-CPU `_smp_pub_addr` / `_smp_pub_val` slots in `startup.S`), preventing another CPU from resuming the outgoing thread while the first CPU is still using its stack!
+   - `internalSwitchThreads()` re-links the outgoing thread and makes the next eligible thread current (`scheduler.current_thread[cpu]`). On SMP it skips any thread whose `context.port.stack_ptr` is `null`: that context is still live in another CPU's registers.
+   - Saving and claiming the stack pointers is the **port's** job. On AArch64 and AArch32 the assembly saves the frame and calls `port_switch_stacks(sp)` (cooperative switch, from `port_ctx_switch_handler`) or `port_isr_handler(sp)` (interrupt exit); the Zig function takes the kernel lock, calls `internalSwitchThreads()`, claims the incoming thread (`stack_ptr = null`), **stages** the outgoing thread's publication in the per-CPU `_smp_pub_addr` / `_smp_pub_val` slots, releases the lock and returns the incoming frame's SP.
+   - The assembly performs the staged store only after `mov sp, x0`, once the stack pointer has left the outgoing thread's stack: published any earlier, another CPU could resume that thread on a stack this CPU is still using.
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────┐
@@ -302,37 +314,38 @@ The portable kernel scheduler (`micro-os-plus-iii/src/rtos/scheduler.zig`) manag
   Thread A (Running)      startup.S (Asm)        src/port.zig       Scheduler
   ──────────────────      ───────────────        ────────────       ─────────
           │                      │                     │                │
-          │ 1. Yield / Timer IRQ │                     │                │
+          │ 1. reschedule() /    │                     │                │
+          │    timer IRQ         │                     │                │
           │─────────────────────►│                     │                │
-          │                      │ 2. Push registers   │                │
-          │                      │    (Frame) onto     │                │
-          │                      │    Thread A stack   │                │
-          │                      │──────────┐          │                │
-          │                      │◄─────────┘          │                │
+          │                      │ 2. Push the frame   │                │
+          │                      │    onto A's stack   │                │
           │                      │                     │                │
-          │                      │ 3. uos_switch_context(current_sp)    │
+          │                      │ 3. port_switch_stacks(sp)            │
+          │                      │    / port_isr_handler(sp)            │
           │                      │────────────────────►│                │
-          │                      │                     │ 4. internalSwitchThreads()
+          │                      │                     │ 4. take the kernel lock
+          │                      │                     │    internalSwitchThreads()
           │                      │                     │───────────────►│
-          │                      │                     │                │ Select ready
-          │                      │                     │                │ Thread B & claim:
-          │                      │                     │                │ B.stack_ptr = null
-          │                      │                     │◄───────────────│
-          │                      │                     │   Return next_sp
-          │                      │                     │                │
-          │                      │                     │ 5. Stage deferred pub:
+          │                      │                     │                │ current_thread
+          │                      │                     │◄───────────────│ [cpu] = B
+          │                      │                     │ 5. claim B:    │
+          │                      │                     │    B.stack_ptr = null
+          │                      │                     │    stage the publication:
           │                      │                     │    _smp_pub_addr[cpu] = &A.stack_ptr
-          │                      │                     │    _smp_pub_val[cpu]  = current_sp
+          │                      │                     │    _smp_pub_val[cpu]  = sp
+          │                      │                     │    release the lock
           │                      │◄────────────────────│                │
-          │                      │   Return next_sp    │                │
+          │                      │  B's saved SP       │                │
           │                      │                     │                │
-          │                      │ 6. Switch SP = next_sp               │
-          │                      │ 7. Publish *(_smp_pub_addr) = current_sp
-          │                      │    + DMB ISH (Thread A stack now safe!)
-          │                      │ 8. Pop registers from Thread B stack │
-          │                      │    & ERET into Thread B              │
+          │                      │ 6. SP = B's SP      │                │
+          │                      │ 7. *(_smp_pub_addr) = A's SP, DMB ISH│
+          │                      │    (A may now be picked elsewhere)   │
+          │                      │ 8. Pop B's frame, ERET (AArch64)     │
+          │                      │    / movs pc, lr (AArch32)           │
           ▼                      ▼                     ▼                ▼
 ```
+
+On Cortex-M the same steps run in PendSV (`src/context.zig`, `pendSvHandlerV7m` / `pendSvHandlerV6m`, which call `uos_port_switch_stacks`), and on POSIX around `swapcontext()`.
 
 ---
 
@@ -412,6 +425,21 @@ pub fn releaseSecondaries(log: *const fn ([]const u8) void) void {
 ### 3.3 Step 2: Early Boot & Exception Vectors (`startup.S`)
 
 `boards/<board_name>/startup.S` handles bare-metal entry before Zig code can execute:
+1. **Mask Interrupts**: Disable IRQ/FIQ immediately at `_start`.
+2. **Privilege Level Transition**: Drop from EL3/EL2 to EL1h (AArch64) or from HYP to SVC mode (AArch32), enabling FP/SIMD (`CPACR_EL1` / `CPACR` + `FPEXC.EN`) and unaligned access.
+3. **Install Vector Table**: Load `VBAR_EL1` / `VBAR` with the address of `vector_table`.
+4. **Core Dispatch**: Read CPU ID (`MPIDR_EL1 & 0xFF`). Core 0 proceeds to `core0_start`; secondary cores park in `secondary_park` (waiting on `__smp_spin[core]` or PSCI/BootROM wakeup).
+5. **Core 0 Initialization**:
+   - Load `sp = __stack_top`.
+   - Zero `.bss` (`__bss_start` to `__bss_end`).
+   - Call `bl mmu_init` (builds page tables, cleans D-cache lines, enables MMU + L1/L2 caches).
+   - Call `bl uos_core0_main` (located in `src/port.zig`, which calls `root.main()`).
+6. **Secondary Core Entry (`core1_entry`, `core2_entry`, `core3_entry`)**:
+   - Load per-core stack (`__stack_top_core1`, etc.).
+   - Call `bl mmu_enable` (uses the shared page tables built by Core 0).
+   - Call `bl boot_core1` (`bootSecondaryCore(1)` in `src/port.zig`: `sysInit()` sets up the CPU's GIC interface and 1 ms timer, `uos.rtos.scheduler.internalPrepareCpu(1)` makes its boot pseudo-thread current, then `scheduler.reschedule()` switches to the first ready thread, the CPU's idle thread at the latest).
+
+---
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────┐
@@ -430,36 +458,25 @@ pub fn releaseSecondaries(log: *const fn ([]const u8) void) void {
       │ • SP = __stack_top      │             │ • Wait on __smp_spin[i] │
       │ • Zero .bss section     │             │   or BootROM/PSCI wake  │
       │ • bl mmu_init           │             └────────────┬────────────┘
-      │   (Build L1/L2/L3 tables│                          │
+      │   (build the tables     │                          │
       │    & enable MMU+caches) │      releaseSecondaries()│
       │ • bl uos_core0_main     │─────────────────────────►│
       │   ──► root.main()       │                          ▼
-      │   ──► scheduler.start() │             ┌─────────────────────────┐
-      └────────────┬────────────┘             │  core1..3_entry         │
-                   │                          │ • SP = __stack_top_coreN│
+      │   ──► uos.rtos.run()    │             ┌─────────────────────────┐
+      │   ──► scheduler.start() │             │  core1..3_entry         │
+      └────────────┬────────────┘             │ • SP = __stack_top_coreN│
                    │                          │ • bl mmu_enable (shared)│
-                   │                          │ • bl boot_core1         │
-                   │                          │   (GIC CPU + 1kHz timer)│
+                   │                          │ • bl boot_coreN:        │
+                   │                          │   sysInit() (GIC CPU    │
+                   │                          │   interface, 1 ms timer)│
+                   │                          │   internalPrepareCpu(N) │
+                   │                          │   scheduler.reschedule()│
                    └─────────────┬────────────┴────────────┘
                                  ▼
               ┌─────────────────────────────────────────────┐
-              │     uos_first_thread_restore (SMP Live)     │
+              │  every CPU runs ready threads (or its idle) │
               └─────────────────────────────────────────────┘
 ```
-
-1. **Mask Interrupts**: Disable IRQ/FIQ immediately at `_start`.
-2. **Privilege Level Transition**: Drop from EL3/EL2 to EL1h (AArch64) or from HYP to SVC mode (AArch32), enabling FP/SIMD (`CPACR_EL1` / `CPACR` + `FPEXC.EN`) and unaligned access.
-3. **Install Vector Table**: Load `VBAR_EL1` / `VBAR` with the address of `vector_table`.
-4. **Core Dispatch**: Read CPU ID (`MPIDR_EL1 & 0xFF`). Core 0 proceeds to `core0_start`; secondary cores park in `secondary_park` (waiting on `__smp_spin[core]` or PSCI/BootROM wakeup).
-5. **Core 0 Initialization**:
-   - Load `sp = __stack_top`.
-   - Zero `.bss` (`__bss_start` to `__bss_end`).
-   - Call `bl mmu_init` (builds page tables, cleans D-cache lines, enables MMU + L1/L2 caches).
-   - Call `bl uos_core0_main` (located in `src/port.zig`, which calls `root.main()`).
-6. **Secondary Core Entry (`core1_entry`, `core2_entry`, `core3_entry`)**:
-   - Load per-core stack (`__stack_top_core1`, etc.).
-   - Call `bl mmu_enable` (uses the shared page tables built by Core 0).
-   - Call `bl boot_core1` (initializes per-core GIC CPU interface, starts per-core 1 ms timer, enters first ready thread via `uos_first_thread_restore`).
 
 ---
 
@@ -497,38 +514,50 @@ STACK_SIZE   = 0x100000;   /* 1 MiB Core 0 stack */
 W_STACK_SIZE = 0x80000;    /* 512 KiB per secondary core stack */
 HEAP_SIZE    = 0x04000000; /* 64 MiB free store */
 
-MEMORY {
+MEMORY
+{
     RAM (rwx) : ORIGIN = 0x00080000, LENGTH = 0x3B380000
 }
 
-SECTIONS {
+SECTIONS
+{
     . = ORIGIN(RAM);
+
     .text : ALIGN(8) {
-        KEEP(*(.text.boot))     /* _start + vector_table placed first */
+        KEEP(*(.text.boot))     /* _start + vector_table must be placed first */
         *(.text*)
     } > RAM
-    .rodata : ALIGN(8) { *(.rodata*) } > RAM
+
+    .rodata : ALIGN(8) {
+        *(.rodata*)
+    } > RAM
+
     .data : ALIGN(8) {
         *(.data*)
         *(.got*)                /* CRITICAL: keep .got before .bss (NOLOAD) */
     } > RAM
+
     .bss (NOLOAD) : ALIGN(16) {
         __bss_start = .;
-        *(.bss*) *(COMMON)
+        *(.bss*)
+        *(COMMON)
         . = ALIGN(16);
         __bss_end = .;
     } > RAM
+
     .stack (NOLOAD) : ALIGN(16) {
         . = . + STACK_SIZE;   __stack_top = .;
         . = . + W_STACK_SIZE; __stack_top_core1 = .;
         . = . + W_STACK_SIZE; __stack_top_core2 = .;
         . = . + W_STACK_SIZE; __stack_top_core3 = .;
     } > RAM
+
     .heap (NOLOAD) : ALIGN(16) {
         __heap_start = .;
         . = . + HEAP_SIZE;
         __heap_end = .;
     } > RAM
+
     _end = .;
 }
 ```
@@ -574,8 +603,7 @@ SECTIONS {
 ### 3.7 Note on MicroZig-Based Boards (`micro-os-plus-iii-cortexm`)
 
 In `micro-os-plus-iii-cortexm`, startup code, vector tables, and linker scripts are provided automatically by **MicroZig** (`microzig.MicroBuild(.{ .rp2xxx = true, .stm32 = true })`). Therefore, adding a Cortex-M board only requires:
-
-1. Creating `src/boards/<board_name>.zig` (which configures system clocks, SysTick/Timer, LED, and RP2040/RP2350 FIFO multicore launch).
+1. Creating `src/boards/<board_name>.zig` (which configures system clocks, SysTick/Timer, LED, and RP2040/RP2350 FIFO multicore launch). Examples of small STM32 board files: `src/boards/nucleof411.zig` (the shared `stm32f4.zig` for the clocks, an interrupt-driven USART and the LED, and `pub const interrupts` for its USART2 handler) and `src/boards/weactf412.zig` (the C++ board's RTOS-aware USART1 driver, `stm32f4_uart_dma.zig`: RXNE-interrupt reception and DMA transmission; the board module may import `uos`).
 2. Adding the enum tag to `BoardId`, `boards`, and `boardTarget()` in `micro-os-plus-iii-cortexm/build.zig`.
 3. Adding the OpenOCD `CFG` and `RUN` commands for the board in `micro-os-plus-iii-cortexm/test/hw.sh`.
 
@@ -610,10 +638,11 @@ When `addFirmware()` runs in `<arch>/build.zig`, it constructs a fresh set of Zi
         │    app module (test/<test-name>/main.zig)    │      │
         └──┬────────────────┬──────────────┬───────────┴─┐    │
    "board" │   "uos_suites" │  opt: "sd" / │    "uos"    │    │
-           ▼                ▼    "flatfs"  ▼             ▼    ▼
+           ▼                ▼    "fatfs"   ▼             ▼    ▼
 ┌────────────────┐  ┌──────────────┐  ┌─────────┐  ┌─────────────────────────┐
 │  board module  │  │  uos_suites  │  │ drivers │  │       uos module        │
-│(test/board.zig)│  │ (suites.zig) │  │(sd.zig) │  │(micro-os-plus-iii/uos)  │
+│(test/board.zig)│  │ (suites.zig) │  │(sd.zig, │  │(micro-os-plus-iii/uos)  │
+│                │  │              │  │fatfs.zig│  │                         │
 └──┬──────────┬──┘  └───────┬──────┘  └────┬────┘  └──────────┬──────────▲───┘
    │          │   "uos"     │    "uos"     │  "uos"           │          │
    │          └─────────────┴──────────────┴──────────────────┼─────────►│
@@ -701,10 +730,10 @@ pub const uos_options: uos.Options = .{
     .default_stack_size_bytes = 16384,            // Default thread stack size
     .idle_stack_size_bytes = 16384,               // Per-CPU idle stack size
     .min_stack_size_bytes = 2048,                 // Minimum allowed stack size
-    .dynamic_memory_size_bytes = 8 * 1024 * 1024, // 8 MiB system heap (FirstFitTop)
+    .dynamic_memory_size_bytes = 8 * 1024 * 1024, // 8 MiB heap (FirstFitTop)
     .c_api = true,                                // Export os_* C API (c_api.zig)
     .cmsis_os = true,                             // Export CMSIS-RTOS v1 API
-    .c_runtime = true,                            // Export freestanding libc
+    .c_runtime = true,                            // Minimal C runtime (libc.zig)
     .trace = .{
         .scheduler = false,
         .thread = false,
@@ -717,16 +746,16 @@ pub const uos_options: uos.Options = .{
 
 ### 4.4 Build CLI Options (`-D` Flags)
 
-All architecture ports support a consistent set of command-line options passed via `zig build`:
+The options passed to `zig build` (`zig build --help` lists them for each port):
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `-Dboard=<name>` | `BoardId` | Port default (`rpi4b`, `luckfox-lyra`, `pico2`) | Selects the target hardware board to compile for. |
-| `-Dtest=<name>` | `[]const u8` | *(all tests)* | Compiles (and runs when paired with `run`) only the specified test binary. |
-| `-Doptimize=<mode>` | `OptimizeMode` | `ReleaseSafe` (`.safe`) | Optimization mode (`Debug`, `ReleaseSafe`, `ReleaseFast`, `ReleaseSmall`). |
-| `-Dqemu=<path>` | `[]const u8` | xPack QEMU path | Path to `qemu-system-aarch64` / `qemu-system-arm` (when `run` uses QEMU). |
-| `-Dcmsis_rv=<path>` | `[]const u8` | `~/.local/xPacks/@xpacks/arm-cmsis-rtos-validator/1.0.0-4` | Path to the Arm CMSIS-RTOS Validator xPack source tree. |
-| `-Dtimeout=<sec>` | `u32` | `300` or `600` | Maximum seconds `zig build run` waits for hardware test completion. |
+| Option | Type | Ports | Default | Description |
+|---|---|---|---|---|
+| `-Dboard=<name>` | `BoardId` | cortexm, aarch32, aarch64 | `pico2`, `luckfox-lyra`, `rpi4b` | Selects the target board. |
+| `-Dtest=<name>` | `[]const u8` | all | *(all tests)* | Builds (and, with `run`, runs) only that test. |
+| `-Doptimize=<mode>` | `std.lang.Optimize` | all | `safe` | `debug`, `safe`, `fast` or `small`. |
+| `-Dcmsis_rv=<path>` | `[]const u8` | cortexm, aarch64, posix-arch | `~/.local/xPacks/@xpacks/arm-cmsis-rtos-validator/1.0.0-4` | The Arm CMSIS-RTOS Validator xPack; without it `cmsis-os-validator` is skipped. |
+| `-Dtimeout=<sec>` | `u32` | cortexm, aarch32 | `600`, `300` | Seconds `zig build run` waits for the verdict (`test/hw.sh`). |
+| `-Dqemu=<path>` | `[]const u8` | aarch64 | the xPack QEMU 9.2.4 | `qemu-system-aarch64` for `zig build run` (QEMU `raspi4b`). |
 
 ---
 
@@ -740,14 +769,13 @@ Each architecture port configures `b.resolveTargetQuery(...)` and executable pro
 | **`aarch32`** (Luckfox Lyra) | `.arm` | `.freestanding` | `.eabihf` | `cortex_a7` | `false` (`ncpu=3`) | `_start` |
 | **`cortexm`** (RP2350 Pico 2) | `.thumb` | `.freestanding` | `.eabihf` | `cortex_m33` | `false` (`ncpu=2`) | MicroZig |
 | **`cortexm`** (RP2040 Pico) | `.thumb` | `.freestanding` | `.eabi` | `cortex_m0plus` | `false` (`ncpu=2`) | MicroZig |
-| **`cortexm`** (STM32F411/412) | `.thumb` | `.freestanding` | `.eabihf` | `cortex_m4` | `true` (`ncpu=1`) | MicroZig |
-| **`posix-arch`** (Linux Host) | `.x86_64` | `.linux` | `.gnu` | `baseline` | `false` (`ncpu=4`) | C `main` |
+| **`cortexm`** (STM32F411 / F412) | `.thumb` | `.freestanding` | `.eabihf` | `cortex_m4` | `true` (`ncpu=1`) | MicroZig |
+| **`posix-arch`** (Linux Host) | `.x86_64` (native) | `.linux` (native) | `.gnu` (libc) | `baseline` / native | `false` (`ncpu=4`, the tests' choice) | C `main` |
 
-Key compiler and linker settings enforced by `build.zig`:
-
-- **`.single_threaded = false`**: Crucial on SMP targets. Ensures Zig/LLVM emits full hardware atomic read-modify-write instructions (`ldaxr`/`stlxr` on AArch64, `ldrex`/`strex` on ARMv7, `dmb ish`) rather than lowering atomics to non-atomic loads/stores.
-- **`exe.link_gc_sections = true`**: Enables `--gc-sections` in LLD to strip unused functions and keep firmware binaries compact (49 KB – 212 KB).
-- **`b.addObjCopy(exe.getEmittedBin(), .{ .format = .binary })`**: Produces raw binary images (`.img` / `.bin`) alongside `.elf` executables so images can be booted directly from an SD card (`kernel8.img`) or loaded by `qemu-system-aarch64 -kernel`.
+Key compiler/linker settings in the `build.zig` files:
+- **`.single_threaded = false`** on the SMP builds (the Cortex-M port sets `single_threaded = (ncpu == 1)`): Zig/LLVM then emits real atomic read-modify-write sequences (`ldaxr`/`stlxr` on AArch64, `ldrex`/`strex` on ARMv7, `dmb ish`) instead of lowering atomics to plain loads and stores.
+- **Section garbage collection**: the AArch32 port sets `exe.link_gc_sections = true`; MicroZig builds pass `-ffunction-sections -fdata-sections --gc-sections`.
+- **`b.addObjCopy(exe.getEmittedBin(), .{ .format = .binary })`**: the AArch64 port installs a raw `.img` next to each `.elf` (an SD-card `kernel8.img`, or `qemu-system-aarch64 -kernel`); the AArch32 port uses it for the Cortex-M0 firmware that `smp-test-int5-m0` embeds.
 
 ---
 
@@ -759,13 +787,13 @@ Key compiler and linker settings enforced by `build.zig`:
    When `Test.c_sources.len > 0` or `Test.cmsis_rv == true`:
    - `uos_build.addCIncludes(kernel_dep, root_mod, true)` adds:
      - `micro-os-plus-iii/include` (provides `<cmsis-plus/rtos/os-c-api.h>` and `<cmsis-plus/rtos/os-c-decls.h>`).
-     - `micro-os-plus-iii/include/c` (provides freestanding C standard headers: `<stdio.h>`, `<stdlib.h>`, `<string.h>`, `<stdint.h>`, `<stddef.h>`, `<stdbool.h>`, `<stdarg.h>`, `<assert.h>`, `<limits.h>`, `<inttypes.h>`, `<errno.h>`).
+     - `micro-os-plus-iii/include/c` (the minimal C runtime's headers: `<stdio.h>`, `<stdlib.h>`, `<string.h>`, `<assert.h>`; the compiler's own headers give `<stdint.h>`, `<stddef.h>`, `<stdbool.h>`, `<stdarg.h>`, `<limits.h>`).
    - `micro-os-plus-iii/src/c_api.zig` exports all `os_thread_*`, `os_mutex_*`, `os_semaphore_*`, `os_condvar_*`, `os_evflags_*`, `os_mqueue_*`, `os_mempool_*`, `os_timer_*`, and `os_clock_*` C functions when `uos_options.c_api = true`.
    - `micro-os-plus-iii/src/cmsis_os.zig` exports the Arm CMSIS-RTOS v1 API (`osKernelStart`, `osThreadCreate`, `osMutexWait`, `osSignalSet`, `osMailAlloc`, etc.) when `uos_options.cmsis_os = true`.
-   - `micro-os-plus-iii/src/libc.zig` + `src/c_printf.c` provide `memcpy`, `memset`, `memmove`, `memcmp`, `strlen`, `strcmp`, `strncmp`, `strcpy`, `strncpy`, `snprintf`, `vsnprintf`, `printf`, `puts`, `putchar`, `malloc`, `free`, `calloc`, and `abort` when `uos_options.c_runtime = true`.
+   - `micro-os-plus-iii/src/libc.zig` provides, when `uos_options.c_runtime = true`: `printf`, `vprintf`, `snprintf`, `vsnprintf`, `fprintf`, `vfprintf`, `fflush`, `puts`, `putchar`; `strlen`, `strcmp`, `strncmp`, `strcpy`, `strncpy`, `strchr`, `strrchr`; `__assert_func` (to the Zig panic); `exit`, `_Exit`, `_exit`, `abort` (`uos.rtos.exit()` / `uos.rtos.terminate()`); and the `trace_*` functions. There is no `malloc`/`free`; `memcpy`, `memset`, `memmove` and `memcmp` come from compiler_rt. On AArch64 the variadic `printf` family is the port's `src/c_printf.c` (Zig cannot define C variadic functions there).
 3. **Storage Device Drivers (`.devices = true`)**:
-   - In `micro-os-plus-iii-aarch64` and `posix-arch`: Links pure-Zig `drivers/sd.zig` and `drivers/flatfs.zig` (`sd` and `flatfs` modules) or FatFs over EMMC2.
-   - In `micro-os-plus-iii-aarch32`: Links `drivers/sd.zig`, `drivers/fatfs.zig`, and compiles Elm-Chan FatFs R0.15a (`drivers/fatfs/ff.c` with `-std=c11`) bridged via `b.addTranslateC` on `drivers/ff_api.h`.
+   - In `micro-os-plus-iii-aarch64` and `micro-os-plus-iii-aarch32`: `drivers/sd.zig` (EMMC2 SDHCI on the Pi 4; `sdmmc.zig`, the RK3506 DW-MMC host, on the Lyra), `drivers/fatfs.zig`, and Elm-Chan FatFs R0.15a (`drivers/fatfs/ff.c`, unchanged) translated through `b.addTranslateC` on `drivers/ff_api.h`. The card's existing FAT32 volume is mounted, files go to `/tests`, nothing is formatted.
+   - In `micro-os-plus-iii-posix-arch`: `drivers/sd.zig` (a host file as the card) and `drivers/flatfs.zig` (the C++ flat file system).
 
 ---
 
@@ -774,11 +802,10 @@ Key compiler and linker settings enforced by `build.zig`:
 Below are the exact commands to build tests across all repositories. Assuming the Zig 0.17 compiler is at `/home/dan/zig-x86_64-linux-0.17.0/zig` (or `zig` on `PATH`):
 
 #### A. AArch64 (`micro-os-plus-iii-aarch64` — Raspberry Pi 4 B)
-
 ```bash
-cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii-aarch64
+cd micro-os-plus-iii-aarch64
 
-# 1. Build all 16 test firmwares (.elf and .img) for Raspberry Pi 4 B (ReleaseSafe):
+# 1. Build all 16 test firmwares (.elf and .img) for Raspberry Pi 4 B (defaultReleaseSafe):
 /home/dan/zig-x86_64-linux-0.17.0/zig build
 
 # 2. Build a single test firmware (e.g., smp-mem-inter-test):
@@ -790,15 +817,12 @@ cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii-aarch6
 # 4. Build in ReleaseFast mode (maximum performance):
 /home/dan/zig-x86_64-linux-0.17.0/zig build -Doptimize=fast
 ```
-
 Outputs are installed to:
-
 - `zig-out/firmware/rpi4b/<test>.elf` (ELF64 with symbols, loaded by OpenOCD)
 - `zig-out/firmware/rpi4b/<test>.img` (Flat raw binary, loaded by QEMU or SD card bootloader)
 
-#### B. What `zig build` Executes Under the Hood (Exact `zig build-exe` Command in Clear)
-
-When you run `zig build -Dtest=smp-test0` in `micro-os-plus-iii-aarch64`, the Zig build runner constructs and executes the following exact compiler command:
+#### B. What `zig build` Executes Under the Hood (the `zig build-exe` Command)
+When you run `zig build -Dtest=smp-test0` in `micro-os-plus-iii-aarch64`, the Zig build runner constructs a `zig build-exe` command of the following shape (abridged: the real one also carries the cache and library paths; `zig build -Dtest=smp-test0 --verbose` prints it exactly, when the step is not cached):
 
 ```bash
 /home/dan/zig-x86_64-linux-0.17.0/zig build-exe \
@@ -841,21 +865,19 @@ And for a mixed Zig + C test like `rtos-apis`, it additionally passes the C incl
 ```
 
 #### C. AArch32 (`micro-os-plus-iii-aarch32` — Luckfox Lyra RK3506)
-
 ```bash
-cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii-aarch32
+cd micro-os-plus-iii-aarch32
 
-# Build all 13 tests for Luckfox Lyra (outputs to zig-out/firmware/luckfox-lyra/*.elf):
+# Build all 14 tests for Luckfox Lyra (outputs to zig-out/firmware/luckfox-lyra/*.elf):
 /home/dan/zig-x86_64-linux-0.17.0/zig build
 
 # Build one specific test:
 /home/dan/zig-x86_64-linux-0.17.0/zig build -Dtest=smp-test2
 ```
 
-#### D. Cortex-M (`micro-os-plus-iii-cortexm` — Pico 2, Pico, BlackPill STM32F411/F412, Nucleo-F411)
-
+#### D. Cortex-M (`micro-os-plus-iii-cortexm` — Pico 2, Pico, WeAct Black Pill STM32F411, Nucleo-F411RE, WeAct STM32F412RE)
 ```bash
-cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii-cortexm
+cd micro-os-plus-iii-cortexm
 
 # Build all tests for Raspberry Pi Pico 2 (RP2350, 2x Cortex-M33 SMP):
 /home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=pico2
@@ -866,17 +888,19 @@ cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii-cortex
 # Build all single-core tests for WeAct BlackPill STM32F411CE (Cortex-M4F):
 /home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=weactf411
 
-# Build all single-core tests for ST NUCLEO-F411RE:
+# Build all tests for the ST Nucleo-F411RE (Cortex-M4F, the integrated ST-Link):
 /home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=nucleof411
+
+# Build all tests for the WeAct STM32F412RE core board (Cortex-M4F, an ST-Link):
+/home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=weactf412
 
 # Build a single test for a specific board:
 /home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=pico2 -Dtest=cmsis-os-validator
 ```
 
 #### E. Synthetic POSIX Architecture (`micro-os-plus-iii-posix-arch` — Linux Host)
-
 ```bash
-cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii-posix-arch
+cd micro-os-plus-iii-posix-arch
 
 # Build all 18 host-executable tests (outputs to zig-out/bin/*):
 /home/dan/zig-x86_64-linux-0.17.0/zig build
@@ -900,10 +924,10 @@ Testing in µOS++ IIIe is split into two distinct layers:
 │  ┌────────────────────────────────────┐  ┌──────────────────────────────┐  │
 │  │ src/host_tests.zig                 │  │ tests/suites/*.zig           │  │
 │  │ • Intrusive lists (Ready/Wait/Clk) │  │  (imported as 'uos_suites')  │  │
-│  │ • Event & Thread internal flags    │  │ • check.zig (test assertions)│  │
-│  │ • FirstFitTop, BlockPool, Lifo     │  │ • rtos_apis.zig (RTOS suite) │  │
-│  │ • c_storage.zig (C ABI sizes)      │  │ • io_apis.zig (POSIX I/O)    │  │
-│  └─────────────────┬──────────────────┘  │ • smp.zig (portable SMP)     │  │
+│  │ • Event & Thread internal flags    │  │ • check.zig (check helpers)  │  │
+│  │ • FirstFitTop, BlockPool           │  │ • rtos_apis.zig (RTOS suite) │  │
+│  │ • c_storage.zig (C ABI sizes)      │  │ • io_apis.zig (uos.io)       │  │
+│  └─────────────────┬──────────────────┘  │ • smp.zig (SMP suites)       │  │
 │                    │                     └──────────────┬───────────────┘  │
 │     zig build test │ (native host)                      │ imported as      │
 │                    ▼                                    │ 'uos_suites'     │
@@ -919,11 +943,11 @@ Testing in µOS++ IIIe is split into two distinct layers:
 │                    ▼                                    ▼                  │
 │  ┌────────────────────────────────────┐  ┌──────────────────────────────┐  │
 │  │ Portable Suite Wrappers            │  │ Architecture & Soak Tests    │  │
-│  │ • test/rtos-apis/                  │  │ • smp-test0..4 (SMP bringup) │  │
+│  │ • test/rtos-apis/                  │  │ • smp-test0..4 (SMP)         │  │
 │  │   (runs uos_suites + test-c-api.c) │  │ • mutex-stress, pro-cons     │  │
 │  │ • test/cmsis-os-validator/         │  │ • smp-pipeline, smp-num-test │  │
 │  │   (Arm CMSIS-RTOS v1 C validator)  │  │ • smp-mat-test (+ sdcard)    │  │
-│  │                                    │  │ • sd-test, smp-mem-test,     │  │
+│  │                                    │  │ • sd_test, smp-mem-test,     │  │
 │  │                                    │  │   smp-mem-inter-test         │  │
 │  └────────────────────────────────────┘  └──────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -933,66 +957,63 @@ Testing in µOS++ IIIe is split into two distinct layers:
 
 ### 5.2 Portable Kernel Tests in `micro-os-plus-iii`
 
-Located inside `/home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii/`:
+Located inside `micro-os-plus-iii/`:
 
 1. **Host-Only Unit Tests (`src/host_tests.zig`)**:
    Tests kernel data structures directly on the build machine without needing a hardware port:
    - `src/rtos/lists.zig`: Intrusive doubly-linked thread waiting lists (priority-ordered insertion, head/tail removal), clock timeout delta/ordered lists.
    - `src/rtos/flags.zig`: Internal event/thread bitflag state machine (wait any/all, auto-clear).
-   - `src/memory/first_fit_top.zig`: Free-list heap allocator (`FirstFitTop`), block splitting, coalescing, aligned allocation, statistics.
-   - `src/memory/block_pool.zig`: Fixed-size block memory pool (`BlockPool`).
-   - `src/memory/lifo.zig`: LIFO deterministic memory allocator (`Lifo`).
-   - `src/c_storage.zig`: Parses `include/cmsis-plus/rtos/os-c-decls.h` and verifies at test time that the C struct sizes (`os_thread_t`, `os_mutex_t`, `os_semaphore_t`, `os_condvar_t`, `os_evflags_t`, `os_mqueue_t`, `os_mempool_t`, `os_timer_t`) are large enough and properly aligned to hold the corresponding Zig kernel structs on both 32-bit and 64-bit targets.
+   - `src/memory/FirstFitTop.zig`: Free-list heap allocator (`FirstFitTop`), block splitting, coalescing, aligned allocation, statistics.
+   - `src/memory/BlockPool.zig`: Fixed-size block memory pool (`BlockPool`).
+   - `src/c_storage.zig`: the C object sizes (`os_thread_t`, `os_mutex_t`, `os_semaphore_t`, `os_condvar_t`, `os_evflags_t`, `os_mqueue_t`, `os_mempool_t`, `os_timer_t`): the build fails when a Zig object outgrows its storage, and a host test fails when `include/cmsis-plus/rtos/os-c-decls.h` disagrees with them.
 
 2. **Shared On-Target Test Suites (`tests/suites.zig`, imported as `uos_suites`)**:
    Portable RTOS test logic shared across all architectures:
-   - `tests/suites/check.zig`: Test assertion framework (`check()`, `checkEq()`, `finish()`) tracking passed/failed checks.
+   - `tests/suites/check.zig`: minimal check helpers: a failed check is traced with its location and counted, and the run goes on.
    - `tests/suites/rtos_apis.zig`: Exhaustive Zig RTOS API test suite exercising Thread creation/join/priority/yield, Mutex (normal, errorcheck, recursive, priority inheritance, robustness), Semaphore (binary, counting, timedWait), ConditionVariable, EventFlags, MessageQueue (priority ordering, timed send/receive), MemoryPool, Timer (one-shot and periodic), and Clocks (`sysclock`, `rtclock`, `hrclock`).
-   - `tests/suites/io_apis.zig`: POSIX I/O descriptor table, `DeviceCharacter`, `BlockDevice`, and `FileSystem` abstraction tests.
-   - `tests/suites/smp.zig`: Portable multi-core test suite (`smp1` parallel thread distribution, `smp2` cross-core mutex contention, `smp3` cross-core queue wakeup, `smp4` affinity migration, `smp5` IPI stress).
+   - `tests/suites/io_apis.zig`: the `uos.io.devices` tests: the file descriptor table, `CharDevice`, `BlockDevice`, partitions, the locked block device and the RAM disk (the C++ `test-posix-io-api.cpp`).
+   - `tests/suites/smp.zig`: the SMP suites (the C++ `smp-test2`..`smp-test4`, `smp-mat-test` and `fp-switch`), used by the Cortex-M generic tests; on one CPU the per-CPU checks are skipped.
 
 ---
 
 ### 5.3 Architecture & Board Tests in `<architecture>/test/`
 
-Located inside `<architecture>/test/<test-name>/main.zig`, these are complete bootable applications tailored to exercise SMP hardware, peripherals, MMU, caches, and full soak workloads:
+Located inside `<architecture>/test/<test-name>/main.zig`, these are complete bootable applications, faithful ports of the C++ board tests. The table lists the Raspberry Pi 4 B set (`micro-os-plus-iii-aarch64`, 4 CPUs); the Lyra runs the same portable ones on 3 CPUs, and each port's README lists its own:
 
 | Test Name | Cores | Description & What It Verifies |
 |---|---|---|
-| **`smp-test0`** | 1 | **Phase-1 Bringup**: Initializes UART0, MMU identity mapping, GIC, and 1 kHz Generic Timer on Core 0. Runs 10 heartbeats via `sysclock.sleepFor(1000)` and verifies tick accuracy. |
-| **`smp-test1`** | 4 (or N) | **SMP Bringup & Preemption**: Releases secondary cores (`c1..c3`), spawns worker threads across all cores, and verifies preemptive round-robin time-slicing and per-core execution counters. |
-| **`smp-test2`** | 4 (or N) | **SMP Mutex & Atomic Exclusives**: Pinned worker threads hammering a shared counter protected by a `uos.rtos.Mutex` (`ldaxr`/`stlxr` spinlock + wait list). Verifies exact final count with zero lost updates. |
-| **`smp-test3`** | 4 (or N) | **Cross-Core Message Queue**: Producer on Core 0 streams integers every 20 ms through a `MessageQueue` to a Consumer on Core 1 (which classifies primes and toggles the LED) and a Logger on Core 2. |
-| **`smp-test4`** | 4 (or N) | **Multi-Stage Kernel Primitives**: 5-stage cross-core synchronization verification covering `EventFlags`, `MessageQueue`, `MemoryPool`, `ConditionVariable`, and `Mutex`. |
-| **`smp-mat-test`** | 4 (or N) | **Parallel Block LU Linear Solver (RAM)**: Runs a 10-worker thread pool demo (20 tasks), then solves a 200 × 200 diagonally-dominant system (B = 50) in parallel across all cores using generation spin-barriers, comparing against single-core classical Gaussian elimination (Δx < 0.01). |
-| **`smp-mat-sdcard-test`** | 4 (or N) | **SD-Backed Parallel Block LU Solver**: Formats a FlatFs/FatFs volume on the SD card, generates A and b matrices, writes `A.mat` (160 KB) and `b.mat` to SD, reloads working sets from SD, runs the parallel 4-core block solver, and writes/verifies the solution vector on SD. |
-| **`mutex-stress`** | 4 (or N) | **20-Second High-Contention Mutex Soak**: Spawns 10 worker threads across 4 cores contending on a pool of mutexes with randomized hold/sleep times and checksum verification for 20 seconds. |
-| **`smp-pro-cons-test`** | 4 (or N) | **20-Second All-Kernel-Objects Pipeline**: 12 concurrent threads (4 producers, 4 consumers, aggregator, stage worker, pauser suspending/resuming `cons_0`, telemetry, + 200 ms periodic timer) streaming CRC32-verified packets from a `MemoryPool` through a `MessageQueue` with counting/binary semaphores, condition variables, and event flags for 20 seconds. |
-| **`smp-pipeline-test`** | 4 (or N) | **20-Second 4-Stage Sensor Pipeline + SD Storage**: 13 concurrent threads across 4 stages (Generator → Moving-Average Filter → √/Trig Compute → Aggregator) persisting records to `pipe.bin` on the SD card and reading back to verify record CRCs for 20 seconds. |
-| **`smp-num-test`** | 4 (or N) | **20-Second Multi-Priority I/O & Math Soak**: 5 threads with distinct RTOS priorities (`high` UART ticker, `above_normal` LED blinker pacing passes via counting semaphore, `normal` SD text writer, `below_normal` FP math writer, `low` SD tail reader/verifier) concurrently updating and verifying `num.txt` on SD for 20 seconds. |
-| **`sd-test`** | 1 | **SDHCI & FlatFs Verification**: Exercises Phase A (mounting host-seeded volume) and Phase B (formatting volume, writing `hello.txt`, `data1.bin`, `data2.bin`, and 300 KB `big.bin`, reading back and verifying byte-for-byte). |
-| **`smp-mem-test`** | 4 | **High-Memory Dynamic Page Mapping Stress**: 20 threads (5 per core) allocating 1..512 MB blocks from the 3008 MB high-RAM region (`0x40000000..0xFC000000`), mapping 4 KB L3 pages on demand (`mmu_hi_map`), checking guard pages with non-faulting `AT S1E1R` (`mmu_hi_probe`), verifying head/tail canaries and 64-bit data patterns, and unmapping on free with `TLBI VMALLE1IS`. |
-| **`smp-mem-inter-test`** | 4 | **Ring Inter-Thread High-Memory + Hardware CRC32**: 20 threads in a ring (`w[i] -> w[(i+1)%20]`) allocating 1..512 MB blocks, filling patterns, computing hardware CRC32 (`crc32x`/`crc32b`), lending blocks via per-thread `MessageQueue`s (`OWNED -> LENT -> MODIFYING -> MODIFIED -> OWNED`), XORing with a 64-bit mask on the helper core, XORing back on the owner core, and verifying `crc1 == crc2`. |
-| **`rtos-apis`** | 4 (or 1) | **Full Zig + C RTOS API Suite**: Runs the portable Zig `uos_suites.rtos_apis` suite, then invokes the C `test_c_api()` suite (`test-c-api.c` testing every `os_*` C function and static/dynamic object lifecycle), followed by a 20-second multi-core soak loop. |
-| **`cmsis-os-validator`** | 1 (SMP) | **Official Arm CMSIS-RTOS v1 Validator**: Compiles the unmodified Arm `arm-cmsis-rtos-validator` xPack C test suite against `cmsis_os.zig` and `validator-glue.c` (mapping a dummy DWT page at `0xE0001000` and routing SGI 1 as the software-triggered test IRQ). |
+| **`smp-test0`** | 1 of 4 | **Bring-up on one CPU**: the banner, ten heartbeats one second apart on CPU 0 (`sysclock.sleepFor(1000)`), the verdict; the secondary CPUs are not started. |
+| **`smp-test1`** | 4 | **Semaphore ping-pong**: "ping" on CPU 0 and "pong" on CPU 1 hand two binary semaphores back and forth; "logger" on CPU 2 toggles the LED and prints the rounds every second; 10 s. |
+| **`smp-test2`** | 4 | **Kernel lock coherency**: one worker per CPU, pinned, increments a shared counter 2000 times under one `uos.rtos.Mutex`; PASS when no update was lost (8000). |
+| **`smp-test3`** | 4 | **Message queue across CPUs**: the producer (CPU 0) sends 2, 3, 4, ... every 20 ms, the consumer (CPU 1) classifies primes and toggles the LED, the logger (CPU 2) prints the counters; 10 s. |
+| **`smp-test4`** | 4 | **Load balancing**: eight workers without affinity burn CPU and yield, counting where each round ran; PASS when every CPU ran some worker; 10 s. |
+| **`smp-mat-test`** | 4 | **Parallel block linear solver**: a thread pool demo (10 workers, 20 tasks), then a diagonally dominant 120 × 120 system (B = 20) solved by block elimination on every CPU (spin barriers) and by a classical LU on CPU 0; PASS when they agree within 0.01. |
+| **`smp-mat-sdcard-test`** | 4 | **The solver with the matrices on the SD card**: 200 × 200 (B = 20); `A.mat`, `b.mat` stored in `/tests` on the card's existing FAT32 volume (never formatted), loaded back, solved both ways, both solutions stored and compared. |
+| **`mutex-stress`** | 4 | **The kernel's harness suite**: ten threads loop (busy, sleep, lock one mutex, busy, sleep, count); a reporter prints the counts and their spread every 5 s; 30 s. |
+| **`smp-pro-cons-test`** | 4 | **Every kernel object**: 4 producers and 4 consumers (one of each per CPU) pass CRC-checked packets from a memory pool through a message queue, with a counting semaphore as flow control, an aggregator on a condition variable, a stage worker on a binary semaphore, a pauser suspending consumer 0, telemetry on event flags from a periodic timer; 4 s. |
+| **`smp-pipeline-test`** | 4 | **Multi-stage pipeline with SD persistence**: 13 threads (4 producers, 4 compute workers, 2 SD writers appending batches to `tests/pipe.dat`, an auditor reading it back and checking every CRC and the per-source order, an LED pacer, telemetry); 30 s. |
+| **`smp-num-test`** | 4 | **Workers and file I/O**: five threads with explicit priorities (a console ticker, an LED blinker posting a "beat" semaphore, a text writer and an FPU writer appending to `tests/num.txt`, a reader streaming the new tail), every file access under one mutex; 60 s. |
+| **`sd_test`** | 1 | **The SD card and FatFs**: the existing FAT32 volume mounted read-write (nothing formatted); a text file and three pattern files (up to 300 KiB, forcing multi-block CMD18/CMD25) written to `/tests`, read back and compared; the geometry, space and listing printed. Phase A (the host-seeded file) exists only in the QEMU build. |
+| **`smp-mem-test`** | 4 | **High-memory stress**: 20 threads (5 per CPU), 30 operations each: a random block of 1..512 MB from the RAM above 1 GB (`0x40000000..0xFC000000`), 4 KB pages mapped on demand (`mmu_hi_map`), a 64-bit pattern written and read back, the guard pages checked with `AT S1E1R` (`mmu_hi_probe`), canaries checked, pages unmapped (`TLBI VMALLE1IS`). |
+| **`smp-mem-inter-test`** | 4 | **High memory between threads**: 20 threads in a ring, 15 operations each (C++ 30): the owner fills a block and computes its CRC32 (`crc32x`/`crc32b`), the next thread XORs it with a random mask, the owner XORs it back and checks the CRC and the canaries. |
+| **`rtos-apis`** | 4 | **The kernel's harness suite**, its four parts in the C++ order: the Zig RTOS API (`test-cpp-api.zig`), the original C `test-c-api.c` on the kernel's C API, `std.Io` (`test-iso-api.zig`), and `uos.io.devices` (`test-posix-io-api.zig`); the first failing part stops the run. |
+| **`cmsis-os-validator`** | 4 | **The Arm CMSIS-RTOS v1 validator**: the unmodified `arm-cmsis-rtos-validator` xPack C sources over `cmsis_os.zig`; the validator's test interrupt (NVIC IRQ 0 in C++) is GIC SGI 1. |
 
 ---
 
 ### 5.4 Running Tests in Clear: Host & POSIX Native Commands
 
 #### 1. Core Kernel Host Unit Tests (`micro-os-plus-iii`)
-
 ```bash
-cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii
+cd micro-os-plus-iii
 
 # Run all portable kernel unit tests on the Linux host:
 /home/dan/zig-x86_64-linux-0.17.0/zig build test --summary all
 ```
 
 #### 2. Synthetic POSIX SMP Port (`micro-os-plus-iii-posix-arch`)
-
 ```bash
-cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii-posix-arch
+cd micro-os-plus-iii-posix-arch
 
 # Build and run a single test via zig build:
 /home/dan/zig-x86_64-linux-0.17.0/zig build run -Dtest=smp-test4
@@ -1008,11 +1029,9 @@ cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii-posix-
 ### 5.5 Running Tests in Clear: QEMU Emulation Commands
 
 #### 1. Via `zig build run` (AArch64 Raspberry Pi 4 B)
-
 In `micro-os-plus-iii-aarch64`, `zig build run -Dtest=<name>` automatically invokes `qemu-system-aarch64`:
-
 ```bash
-cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii-aarch64
+cd micro-os-plus-iii-aarch64
 
 /home/dan/zig-x86_64-linux-0.17.0/zig build run -Dtest=smp-test0
 /home/dan/zig-x86_64-linux-0.17.0/zig build run -Dtest=smp-test4
@@ -1020,7 +1039,6 @@ cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii-aarch6
 ```
 
 #### 2. Direct QEMU Command in Clear (AArch64 `raspi4b`)
-
 You can execute any built `.img` or `.elf` directly under QEMU in clear:
 
 ```bash
@@ -1034,12 +1052,11 @@ You can execute any built `.img` or `.elf` directly under QEMU in clear:
 ```
 
 **Explanation of every QEMU flag:**
-
 - `-M raspi4b`: Emulates the Raspberry Pi 4 Model B machine (BCM2711 SoC, 2 GB RAM, GIC-400 at `0xFF840000`, PL011 UART0 at `0xFE201000`, ARM Generic Timer).
 - `-smp 4`: Instantiates all 4 Cortex-A72 CPU cores (Core 0 enters at `0x80000`; Cores 1–3 wait in the spin-table at `0xE0`, `0xE8`, `0xF0`).
 - `-nographic`: Disables GUI video output and keeps execution in the terminal.
 - `-serial stdio`: Routes PL011 UART0 (`0xFE201000`) directly to your terminal's standard input/output.
-- `-semihosting-config enable=on,target=native`: Traps `HLT #0xF000` semihosting instructions so `board.hw_result.ok()` (`SYS_EXIT`) cleanly terminates the QEMU process with exit code `0` on `PASS` or `1` on `FAIL`.
+- `-semihosting-config enable=on,target=native`: Traps `HLT #0xF000` semihosting instructions so `board.hw_result.ok()` (`uos.rtos.terminate()`, ending with `SYS_EXIT`) cleanly terminates the QEMU process with exit code `0` on `PASS` or `1` on `FAIL`.
 - `-kernel zig-out/firmware/rpi4b/<test>.img`: Loads the raw binary image at physical address `0x80000` and starts Core 0 in EL2.
 
 ---
@@ -1048,9 +1065,6 @@ You can execute any built `.img` or `.elf` directly under QEMU in clear:
 
 All physical hardware tests use **OpenOCD** over JTAG or SWD with **ARM Semihosting** enabled:
 
-- **No GDB is needed**: OpenOCD loads the `.elf` directly into RAM/Flash and resumes the target.
-- **No serial port capture is needed for verdicts**: When a test finishes, `board.hw_result.ok()` executes `semihosting.write0("\nRESULT: PASS\n")` followed by `semihosting.exit(0)` (`SYS_EXIT`), which prints `RESULT: PASS` directly on OpenOCD's stdout/stderr log.
-
 ```text
 ┌────────────────────────────────────────────────────────────────────────────┐
 │             Physical Hardware Execution & Semihosting Pipeline             │
@@ -1058,10 +1072,11 @@ All physical hardware tests use **OpenOCD** over JTAG or SWD with **ARM Semihost
   ┌──────────────────────────┐    USB     ┌───────────────────────────────┐
   │ Linux Host (`test/hw.sh`)│───────────►│ Debug Probe                   │
   │ • Launches xPack OpenOCD │            │ • RPi Debug Probe (2e8a:000c) │
-  │ • Streams OpenOCD log to │◄───────────│ • WCH-Link / ST-Link V2       │
-  │   zig-out/hw-logs/*.log  │            └───────┬───────────────┬───────┘
-  │ • Polls for RESULT: PASS │                    │ JTAG / SWD    │ UART TX/RX
-  └──────────────────────────┘                    ▼               ▼
+  │ • Streams OpenOCD log to │◄───────────│ • WCH-Link (1a86:8011)        │
+  │   zig-out/hw-logs/*.log  │            │ • ST-Link (0483:374b)         │
+  │ • Polls for RESULT: PASS │            └───────┬───────────────────────┘
+  └──────────────────────────┘                    │ JTAG / SWD
+                                                  ▼
                                           ┌───────────────────────────────┐
                                           │ Physical Target Board         │
                                           │ • RPi 4 B (4x Cortex-A72)     │
@@ -1069,11 +1084,17 @@ All physical hardware tests use **OpenOCD** over JTAG or SWD with **ARM Semihost
                                           │ • Pico 2 / Pico / STM32F4     │
                                           │                               │
                                           │ Semihosting Trap:             │
-                                          │   HLT #0xF000 / BKPT 0xAB     │
+                                          │   HLT #0xF000 / SVC 0x123456  │
+                                          │   / BKPT 0xAB                 │
                                           │   ──► SYS_WRITE0 ("RESULT..") │
                                           │   ──► SYS_EXIT (0x20026)      │
+                                          │                               │
+                                          │ UART ──► the user's terminal  │
+                                          │ (never read by the runner)    │
                                           └───────────────────────────────┘
 ```
+- **No GDB is needed**: OpenOCD loads the `.elf` directly into RAM/Flash and resumes the target.
+- **No serial port capture is needed for verdicts**: a test prints its `RESULT: PASS` (or `FAIL`) line and ends through `board.hw_result.ok()` / `fail()`, or by returning from its main thread (`exit(code)`); both reach `uos.rtos.terminate(code)`: the `_Exit()` trace, the stack report, the port's `terminate()` (which prints a `RESULT` line only if the test printed none) and the semihosting `SYS_EXIT`. The verdict line reaches OpenOCD's log through the semihosting console. On the Raspberry Pi 4 B only the verdict lines (`RESULT`, `FAIL`, `FATAL`) go to semihosting: OpenOCD 0.12 does not resume cores 1–3 after a semihosting call there; the whole console is on the UART.
 
 ---
 
@@ -1081,24 +1102,26 @@ All physical hardware tests use **OpenOCD** over JTAG or SWD with **ARM Semihost
 
 ```bash
 # 1. Raspberry Pi 4 B (AArch64, 4x Cortex-A72 over JTAG):
-cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii-aarch64
+cd micro-os-plus-iii-aarch64
 ./test/hw.sh rpi4b zig-out/firmware/rpi4b/smp-test4.elf 90
 ./test/hw.sh rpi4b zig-out/firmware/rpi4b/smp-mem-inter-test.elf 120
 
 # Skip the 10-second watchdog reset if the board was just power-cycled:
-SKIP_RESET=1 ./test/hw.sh rpi4b zig-out/firmware/rpi4b/sd-test.elf 60
+SKIP_RESET=1 ./test/hw.sh rpi4b zig-out/firmware/rpi4b/sd_test.elf 60
 
 # 2. Luckfox Lyra B (AArch32, RK3506 3x Cortex-A7 over SWD):
-cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii-aarch32
+cd micro-os-plus-iii-aarch32
 ./test/hw.sh luckfox-lyra zig-out/firmware/luckfox-lyra/smp-test2.elf 120
 # Or via zig build run:
 /home/dan/zig-x86_64-linux-0.17.0/zig build run -Dtest=smp-test2
 
-# 3. Cortex-M Boards (Pico 2, Pico, BlackPill STM32F411/F412, Nucleo-F411 over SWD):
-cd /home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github/micro-os-plus-iii-cortexm
+# 3. Cortex-M Boards (Pico 2, Pico, WeAct Black Pill STM32F411, Nucleo-F411RE, WeAct F412RE over SWD):
+cd micro-os-plus-iii-cortexm
 ./test/hw.sh pico2 zig-out/firmware/pico2/smp-test2.elf 120
 ./test/hw.sh pico zig-out/firmware/pico/smp-test2.elf 120
 ./test/hw.sh weactf411 zig-out/firmware/weactf411/rtos-apis.elf 120
+./test/hw.sh nucleof411 zig-out/firmware/nucleof411/mos-test1.elf 120
+./test/hw.sh weactf412 zig-out/firmware/weactf412/uart-test1.elf 120
 # Or via zig build run:
 /home/dan/zig-x86_64-linux-0.17.0/zig build run -Dboard=pico2 -Dtest=smp-test2
 /home/dan/zig-x86_64-linux-0.17.0/zig build run -Dboard=pico -Dtest=smp-test2
@@ -1113,18 +1136,15 @@ All hardware logs are saved to `zig-out/hw-logs/<board>/<test>.log`.
 Below are the exact, unadorned OpenOCD commands executed on each platform so you can run or debug OpenOCD manually in a terminal.
 
 Assuming the xPack OpenOCD binary and scripts path:
-
 ```bash
 OCD="$HOME/.local/xPacks/@xpack-dev-tools/openocd/0.12.0-7.1/.content/bin/openocd"
 OCD_SCRIPTS="$HOME/.local/xPacks/@xpack-dev-tools/openocd/0.12.0-7.1/.content/openocd/scripts"
 ```
 
 ##### 1. Raspberry Pi 4 B (BCM2711, 4x Cortex-A72 — JTAG via Raspberry Pi Debug Probe)
-
 Running a test on the Raspberry Pi 4 B consists of two OpenOCD phases because the Pi 4 B has no physical `nRESET` pin on its JTAG header:
 
 **Step 1 — Trigger BCM2711 Watchdog SoC Reset (`boards/rpi4b/reset.cfg`):**
-
 ```bash
 "$OCD" \
   -s boards/rpi4b \
@@ -1136,20 +1156,16 @@ Running a test on the Raspberry Pi 4 B consists of two OpenOCD phases because th
   -c "catch {mww 0xfe10001c 0x5a000020}" \
   -c "shutdown"
 ```
-
 - `mww 0xfe100024 0x5a000001`: Writes password `0x5A000000` + timeout `1` to `PM_WDOG`.
 - `mww 0xfe10001c 0x5a000020`: Writes password `0x5A000000` + `WRCFG_FULL_RESET` to `PM_RSTC`, immediately resetting all 4 Cortex-A72 cores back to the VideoCore bootrom.
 
 **Step 2 — Wait 10 Seconds for VideoCore GPU Boot:**
-
 ```bash
 sleep 10
 ```
-
 *(Allows the VideoCore GPU to read `config.txt` with `enable_jtag_gpio=1`, configure GPIO 22–27 to ALT4 JTAG, and park Core 0 at `0x200` and Cores 1–3 in the spin-table with MMU/caches off).*
 
 **Step 3 — Connect, Enable Semihosting & HDE on All 4 Cores, Load ELF into DRAM, and Resume:**
-
 ```bash
 "$OCD" \
   -s boards/rpi4b \
@@ -1169,9 +1185,7 @@ sleep 10
   -c "resume" \
   -c "sleep 300000"
 ```
-
 **What each OpenOCD command does:**
-
 - `-f boards/rpi4b/openocd.cfg`: Selects `cmsis-dap` (`0x2e8a:0x000c`), `transport select jtag`, `adapter speed 4000`, defines `bcm2711.cpu0..cpu3`, and attaches `examine-start` (`rpi4b_unwedge`) and `examine-end` (`rpi4b_enable_core_hde`) hooks.
 - `targets bcm2711.cpu0; halt`: Halts Core 0 in `EL2H`.
 - `arm semihosting enable` (on `cpu0..cpu3`): Tells OpenOCD to service `HLT #0xF000` semihosting traps on whichever core calls `board.hw_result.ok()`.
@@ -1182,7 +1196,6 @@ sleep 10
 ---
 
 ##### 2. Luckfox Lyra B (RK3506, 3x Cortex-A7 — SWD via CMSIS-DAP)
-
 ```bash
 "$OCD" \
   -s boards/luckfox-lyra \
@@ -1199,9 +1212,7 @@ sleep 10
   -c "load_image zig-out/firmware/luckfox-lyra/smp-test2.elf" \
   -c "resume 0x00200000"
 ```
-
 **What each OpenOCD command does:**
-
 - `arm mrc 15 0 1 0 0` / `arm mcr 15 0 1 0 0`: Reads CP15 `SCTLR` and clears bits `M` (bit 0, MMU), `C` (bit 2, D-cache), and `I` (bit 12, I-cache) so loading a new ELF into DRAM does not collide with stale virtual mappings.
 - `arm mcr 15 0 7 5 0 0` (`ICIALLU`), `7 5 6 0` (`BPIALL`), `8 7 0 0` (`TLBIALL`): Invalidates I-cache, branch predictor, and unified TLB before `load_image`.
 - `load_image ...` & `resume 0x00200000`: Loads the ELF at `0x00200000` in DRAM and starts Core 0.
@@ -1209,7 +1220,6 @@ sleep 10
 ---
 
 ##### 3. Raspberry Pi Pico 2 (RP2350, 2x Cortex-M33 — SWD via Raspberry Pi Debug Probe)
-
 ```bash
 "$OCD" \
   -s "$OCD_SCRIPTS" \
@@ -1227,9 +1237,7 @@ sleep 10
   -c "targets rp2350.cm1" -c "arm semihosting enable" -c "resume" \
   -c "targets rp2350.cm0" -c "arm semihosting enable" -c "resume"
 ```
-
 **What each OpenOCD command does:**
-
 - `set USE_CORE { cm0 cm1 }; set USE_SMP 0`: Exposes both Cortex-M33 cores (`rp2350.cm0` and `rp2350.cm1`) independently so they can be resumed in sequence.
 - `program ... verify`: Flashes the ELF into QSPI XIP flash and verifies the checksum.
 - `reset init`: Re-initializes XIP flash and parks `cm1` in the BootROM FIFO wait loop.
@@ -1238,13 +1246,11 @@ sleep 10
 ---
 
 ##### 4. Raspberry Pi Pico (RP2040, 2x Cortex-M0+ — SWD via Raspberry Pi Debug Probe)
-
 ```bash
 "$OCD" \
   -s "$OCD_SCRIPTS" \
   -f interface/cmsis-dap.cfg \
   -c "cmsis-dap vid_pid 0x2e8a 0x000c" \
-  -c "transport select swd" \
   -c "adapter speed 15000" \
   -c "set FLASHSIZE 0x200000" \
   -c "set USE_CORE BOTH" \
@@ -1257,17 +1263,14 @@ sleep 10
   -c "targets rp2040.core1" -c "arm semihosting enable" -c "resume" \
   -c "targets rp2040.core0" -c "arm semihosting enable" -c "resume"
 ```
-
 **What each OpenOCD command does:**
-
 - `set FLASHSIZE 0x200000; set USE_CORE BOTH`: Sets the 2 MiB QSPI flash size and instructs `target/rp2040.cfg` to expose `rp2040.core0` and `rp2040.core1` as separate targets rather than a hardware-thread SMP group.
 - `reset init`: Runs the RP2040 ROM `CX` flash setup so XIP is mapped and both cores are halted cleanly.
 - `targets rp2040.core1; arm semihosting enable; resume` before `rp2040.core0`: Resumes Core 1 into the BootROM FIFO launch loop before Core 0 starts, and keeps OpenOCD attached with semihosting enabled on both cores (essential on ARMv6-M Cortex-M0+, where `DHCSR` cannot be read by software and an unhandled `BKPT 0xAB` would escalate to HardFault).
 
 ---
 
-##### 5. WeAct BlackPill STM32F411CE / STM32F412RE (Cortex-M4F — SWD via CMSIS-DAP / WCH-Link)
-
+##### 5. WeAct Black Pill STM32F411CE (Cortex-M4F — SWD via CMSIS-DAP / WCH-Link)
 ```bash
 "$OCD" \
   -s "$OCD_SCRIPTS" \
@@ -1283,5 +1286,19 @@ sleep 10
   -c "arm semihosting enable" \
   -c "reset run"
 ```
+*(The WeAct F412RE runs the same commands with an ST-Link: `-f interface/stlink.cfg -c "transport select swd" -c "adapter speed 1000" -f target/stm32f4x.cfg`, as the C++ board's `openocd.cfg`.)*
 
-*(For `nucleof411`, replace `-f interface/cmsis-dap.cfg -c "cmsis-dap vid_pid ..."` with `-f interface/stlink.cfg`).*
+##### 6. ST Nucleo-F411RE (Cortex-M4F — SWD via the integrated ST-Link)
+```bash
+"$OCD" \
+  -s "$OCD_SCRIPTS" \
+  -f board/st_nucleo_f4.cfg \
+  -c "reset_config connect_assert_srst" \
+  -c "gdb port disabled" -c "tcl port disabled" -c "telnet port disabled" \
+  -c "init" \
+  -c "reset halt" \
+  -c "program zig-out/firmware/nucleof411/mos-test1.elf verify" \
+  -c "arm semihosting enable" \
+  -c "reset run"
+```
+*(As the C++ board's `openocd.cfg`: OpenOCD's Nucleo-F4 board file, NRST asserted while connecting.)*
