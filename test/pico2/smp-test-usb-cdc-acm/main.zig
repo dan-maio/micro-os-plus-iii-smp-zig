@@ -252,7 +252,7 @@ fn consoleTask(_: ?*anyopaque) ?*anyopaque {
                         // Check for Escape (0x1B) anywhere in the line
                         for (line) |ch| {
                             if (ch == 0x1B) {
-                                traceBoth("\nRESULT: PASS (host sent Escape)\n");
+                                uart.write("\nRESULT: PASS (host sent Escape)\n"); // the UART only, as C++
                                 @atomicStore(bool, &g_test_done, true, .release);
                                 return null;
                             }
@@ -300,7 +300,7 @@ fn consoleTask(_: ?*anyopaque) ?*anyopaque {
                 // Check for Escape (0x1B) anywhere in the line
                 for (line) |ch| {
                     if (ch == 0x1B) {
-                        traceBoth("\nRESULT: PASS (host sent Escape)\n");
+                        uart.write("\nRESULT: PASS (host sent Escape)\n"); // the UART only, as C++
                         @atomicStore(bool, &g_test_done, true, .release);
                         return null;
                     }
