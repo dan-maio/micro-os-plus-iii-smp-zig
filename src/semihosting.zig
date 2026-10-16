@@ -1,34 +1,34 @@
-//! ARM semihosting for AArch64 (hlt #0xF000).
-//! Line-buffered output via SYS_WRITE0, exit via SYS_EXIT.
+//! ARM semihosting on AArch64: the trap of the kernel's `uos.semihosting`
+//! (every operation lives there), `hlt #0xF000`; SYS_EXIT gets a
+//! {reason, status} block. Here also the per-CPU line-buffered console
+//! mirror.
 
 const uos = @import("uos");
 const arch = @import("arch.zig");
 
-const sys_write0: u64 = 0x04;
-const sys_exit: u64 = 0x18;
-const adp_stopped_application_exit: u64 = 0x20026;
 
-inline fn call(op: u64, arg: usize) u64 {
+pub fn call(op: usize, arg: usize) usize {
     const daif = arch.getDaif();
     arch.disableIrq();
     defer arch.restoreIrq(daif);
     return asm volatile ("hlt #0xF000"
-        : [ret] "={x0}" (-> u64),
+        : [ret] "={x0}" (-> usize),
         : [op] "{x0}" (op),
           [arg] "{x1}" (arg),
         : .{ .x2 = true, .x3 = true, .memory = true });
 }
 
+/// SYS_EXIT gets a {reason, status} block.
+pub const exit_by_block = true;
+
 /// SYS_WRITE0: print NUL-terminated string.
 pub fn write0(s: [*:0]const u8) void {
-    _ = call(sys_write0, @intFromPtr(s));
+    uos.semihosting.write0(s);
 }
 
-/// SYS_EXIT with ApplicationExit and return code.
+/// SYS_EXIT (the C++ `os_terminate()`).
 pub fn exit(code: u8) noreturn {
-    var block: [2]u64 = .{ adp_stopped_application_exit, code };
-    _ = call(sys_exit, @intFromPtr(&block));
-    while (true) arch.wfi();
+    uos.semihosting.exit(code);
 }
 
 const buf_size = 256;
