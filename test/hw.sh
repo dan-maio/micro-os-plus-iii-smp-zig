@@ -59,7 +59,10 @@ case "$BOARD" in
          -c "arm semihosting enable" -c "reset run")
     ;;
   nucleof411)
-    CFG=(-f interface/stlink.cfg -c "adapter speed ${KHZ:-4000}" -f target/stm32f4x.cfg)
+    # As the C++ board (test/boards/nucleof411/openocd.cfg): the integrated
+    # ST-Link, NRST asserted while connecting.
+    CFG=(-f board/st_nucleo_f4.cfg -c "reset_config connect_assert_srst")
+    [[ -n "$KHZ" ]] && CFG+=(-c "adapter speed $KHZ")
     RUN=(-c "init" -c "reset halt" -c "program \"$ELF\" verify"
          -c "arm semihosting enable" -c "reset run")
     ;;
