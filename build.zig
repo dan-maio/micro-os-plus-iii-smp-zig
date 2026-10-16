@@ -113,6 +113,7 @@ const board_tests = [_]struct { board: BoardId, name: []const u8 }{
     .{ .board = .pico2, .name = "smp-test-ko" },
     .{ .board = .pico2, .name = "exc-test" },
     .{ .board = .weactf411, .name = "spi-pipeline" },
+    .{ .board = .weactf411, .name = "mos-test1" },
     .{ .board = .nucleof411, .name = "mos-test1" },
     .{ .board = .weactf412, .name = "mos-test1" },
     .{ .board = .weactf412, .name = "uart-test1" },
@@ -156,7 +157,7 @@ const tests = [_]Test{
     },
     .{ .name = "io-test" },
     .{ .name = "spi-pipeline", .only = &.{.weactf411} },
-    .{ .name = "mos-test1", .only = &.{ .nucleof411, .weactf412 } },
+    .{ .name = "mos-test1", .only = &.{ .weactf411, .nucleof411, .weactf412 } },
     .{ .name = "uart-test1", .only = &.{.weactf412} },
     .{ .name = "smp-test-usb-cdc-acm", .smp_only = true },
 };

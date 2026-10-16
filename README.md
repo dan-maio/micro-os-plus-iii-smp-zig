@@ -78,11 +78,11 @@ in `test/<test>/`.
 | `cmsis-os-validator` | harness suite `cmsis-os-validator` (Arm CMSIS-RTOS validator) | PASS, 60/60 | PASS, 60/60 | PASS, 60/60 | PASS, 60/60 | PASS, 60/60 |
 | `io-test` | the `std.Io` suite (no C++ counterpart) | PASS, 25/25 | PASS, 25/25 | PASS, 25/25 | builds | builds |
 | `spi-pipeline` | `test/weactf411/spi-pipeline` | WeAct only | WeAct only | PASS, 8/8 | WeAct only | WeAct F411 only |
-| `mos-test1` | `test/{nucleof411,weactf412}/mos-test1` | — | — | not ported yet (C++ has it) | PASS | PASS |
+| `mos-test1` | `test/{weactf411,nucleof411,weactf412}/mos-test1` | — | — | PASS | PASS | PASS |
 | `uart-test1` | `test/weactf412/uart-test1` (RXNE interrupt RX, DMA TX, echo) | — | — | — | — | PASS |
 
 Last full runs (`test/run-all.sh <board>`, 2026-10-16): Pico 2 16/16,
-Pico 16/16, WeAct F411 10/10, all ending through `exit()` / `_Exit()` with
+Pico 16/16, WeAct F411 10/10 (and `mos-test1`, added later, PASS), all ending through `exit()` / `_Exit()` with
 one `RESULT` line each. On the Nucleo-F411RE and the WeAct F412RE the
 tests of the C++ boards ran one by one (2026-10-16); "builds" are the
 generic tests those C++ boards do not have.

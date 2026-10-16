@@ -1467,8 +1467,9 @@ Every test is a faithful port of a C++ test (same banners, lines, LED behaviour 
 | `cmsis-os-validator` | **PASS** | 60/60. |
 | `io-test` | **PASS** | 25/25. |
 | `spi-pipeline` | **PASS** | 8/8 iterations. |
+| `mos-test1` | **PASS** | The C++ board's acceptance test (the same file as the Nucleo's, banner included); 5 s, LED 1 Hz. |
 
-All 10 pass (`test/run-all.sh weactf411`, 2026-10-16).
+All pass (`test/run-all.sh weactf411`, 2026-10-16, 10/10; `mos-test1` run on its own afterwards).
 
 ---
 
