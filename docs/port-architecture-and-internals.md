@@ -12,6 +12,7 @@ This project delivers a complete, idiomatic **Zig (0.17.0)** and **MicroZig** po
 2. **Raspberry Pi Pico (RP2040)**: Dual ARM Cortex-M0+ (ARMv6-M) cores operating in true SMP mode at 125 MHz with SIO hardware spinlock 0 and per-core SIO FIFO interrupts (`SIO_IRQ_PROC0`/`SIO_IRQ_PROC1`).
 3. **WeAct Studio Black Pill (STM32F411CE)**: Single ARM Cortex-M4F core with hardware FPU, demonstrating single-core real-time preemption and hardware context switching.
 4. **ST Nucleo-F411RE (STM32F411RE)**: the same Cortex-M4F on its reset HSI (16 MHz), with the integrated ST-Link and an interrupt-driven USART2 console.
+5. **WeAct STM32F412RE**: a Cortex-M4F at 100 MHz, with the C++ board's interrupt- and DMA-driven USART1 driver.
 
 Across all microcontrollers, all hardware test suites have been verified on physical silicon with a **100% pass rate**.
 
@@ -1481,7 +1482,18 @@ All 10 pass (`test/run-all.sh weactf411`, 2026-10-16).
 | `mutex-stress` | **PASS** | 35 s report: sigma 7, delta within −6 %…+3 %. |
 | `cmsis-os-validator` | **PASS** | 60/60. |
 
-### 10.5 POSIX Host (GNU/Linux x86_64, host threads as CPUs)
+### 10.5 WeAct STM32F412RE (Cortex-M4F Single-Core)
+*An ST-Link over SWD at 1000 kHz, as the C++ board. The clocks are the C++ board's: HSE 8 MHz → PLL → 100 MHz (AHB /1, APB1 /2, APB2 /1), falling back to the reset HSI. The console is the C++ board's USART1 driver (`src/boards/stm32f4_uart_dma.zig`): RXNE-interrupt reception into a ring with a semaphore, DMA2 Stream7 transmission from a ring, both handlers at NVIC priority 5; the trace uses it without blocking (it services the DMA completion by polling when the ring is full).*
+
+| Test | Status | Notes |
+|---|---|---|
+| `mos-test1` | **PASS** | The C++ acceptance test, on USART1 through the DMA; 100 MHz. |
+| `uart-test1` | **PASS** | The C++ echo test: rx thread on the RXNE interrupt, tx thread on the DMA, LED at 1 Hz; TX heartbeats. |
+| `rtos-apis` | **PASS** | All four parts. |
+| `mutex-stress` | **PASS** | 35 s report: sigma 7, delta within −6 %…+3 %. |
+| `cmsis-os-validator` | **PASS** | 60/60. |
+
+### 10.6 POSIX Host (GNU/Linux x86_64, host threads as CPUs)
 *The `micro-os-plus-iii-posix-arch` port; `test/run-all.sh` runs all of them. Outputs compared with the C++ native builds of the `smp` branch.*
 
 | Test | Status | Notes |
