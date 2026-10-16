@@ -503,7 +503,7 @@ SECTIONS
 ### 3.7 Note on MicroZig-Based Boards (`micro-os-plus-iii-cortexm`)
 
 In `micro-os-plus-iii-cortexm`, startup code, vector tables, and linker scripts are provided automatically by **MicroZig** (`microzig.MicroBuild(.{ .rp2xxx = true, .stm32 = true })`). Therefore, adding a Cortex-M board only requires:
-1. Creating `src/boards/<board_name>.zig` (which configures system clocks, SysTick/Timer, LED, and RP2040/RP2350 FIFO multicore launch). Note: `weactf412` is listed in `build.zig` but has no board file yet (`src/boards/weactf412.zig`), so it does not build. `src/boards/nucleof411.zig` is a complete small example: the shared `stm32f4.zig` (clocks, the polled or interrupt-driven USART, the LED), its LED and console, and `pub const interrupts` for its USART2 handler.
+1. Creating `src/boards/<board_name>.zig` (which configures system clocks, SysTick/Timer, LED, and RP2040/RP2350 FIFO multicore launch). Examples of small STM32 board files: `src/boards/nucleof411.zig` (the shared `stm32f4.zig` for the clocks, an interrupt-driven USART and the LED, and `pub const interrupts` for its USART2 handler) and `src/boards/weactf412.zig` (the C++ board's RTOS-aware USART1 driver, `stm32f4_uart_dma.zig`: RXNE-interrupt reception and DMA transmission; the board module may import `uos`).
 2. Adding the enum tag to `BoardId`, `boards`, and `boardTarget()` in `micro-os-plus-iii-cortexm/build.zig`.
 3. Adding the OpenOCD `CFG` and `RUN` commands for the board in `micro-os-plus-iii-cortexm/test/hw.sh`.
 
@@ -768,7 +768,7 @@ cd micro-os-plus-iii-aarch32
 /home/dan/zig-x86_64-linux-0.17.0/zig build -Dtest=smp-test2
 ```
 
-#### D. Cortex-M (`micro-os-plus-iii-cortexm` — Pico 2, Pico, WeAct Black Pill STM32F411, Nucleo-F411RE)
+#### D. Cortex-M (`micro-os-plus-iii-cortexm` — Pico 2, Pico, WeAct Black Pill STM32F411, Nucleo-F411RE, WeAct STM32F412RE)
 ```bash
 cd micro-os-plus-iii-cortexm
 
@@ -784,7 +784,8 @@ cd micro-os-plus-iii-cortexm
 # Build all tests for the ST Nucleo-F411RE (Cortex-M4F, the integrated ST-Link):
 /home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=nucleof411
 
-# (weactf412 is declared in build.zig but has no board file yet: it does not build)
+# Build all tests for the WeAct STM32F412RE core board (Cortex-M4F, an ST-Link):
+/home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=weactf412
 
 # Build a single test for a specific board:
 /home/dan/zig-x86_64-linux-0.17.0/zig build -Dboard=pico2 -Dtest=cmsis-os-validator
@@ -979,12 +980,13 @@ cd micro-os-plus-iii-aarch32
 # Or via zig build run:
 /home/dan/zig-x86_64-linux-0.17.0/zig build run -Dtest=smp-test2
 
-# 3. Cortex-M Boards (Pico 2, Pico, WeAct Black Pill STM32F411, Nucleo-F411RE over SWD):
+# 3. Cortex-M Boards (Pico 2, Pico, WeAct Black Pill STM32F411, Nucleo-F411RE, WeAct F412RE over SWD):
 cd micro-os-plus-iii-cortexm
 ./test/hw.sh pico2 zig-out/firmware/pico2/smp-test2.elf 120
 ./test/hw.sh pico zig-out/firmware/pico/smp-test2.elf 120
 ./test/hw.sh weactf411 zig-out/firmware/weactf411/rtos-apis.elf 120
 ./test/hw.sh nucleof411 zig-out/firmware/nucleof411/mos-test1.elf 120
+./test/hw.sh weactf412 zig-out/firmware/weactf412/uart-test1.elf 120
 # Or via zig build run:
 /home/dan/zig-x86_64-linux-0.17.0/zig build run -Dboard=pico2 -Dtest=smp-test2
 /home/dan/zig-x86_64-linux-0.17.0/zig build run -Dboard=pico -Dtest=smp-test2
@@ -1149,7 +1151,7 @@ sleep 10
   -c "arm semihosting enable" \
   -c "reset run"
 ```
-*(`test/hw.sh` also has an entry for `weactf412` (the same), but that board does not build yet: it has no board file.)*
+*(The WeAct F412RE runs the same commands with an ST-Link: `-f interface/stlink.cfg -c "transport select swd" -c "adapter speed 1000" -f target/stm32f4x.cfg`, as the C++ board's `openocd.cfg`.)*
 
 ##### 6. ST Nucleo-F411RE (Cortex-M4F — SWD via the integrated ST-Link)
 ```bash

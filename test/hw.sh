@@ -12,8 +12,9 @@
 # first "RESULT: PASS" or "RESULT: FAIL".
 #
 # Probes (override with OCD_PROBE='0xVID 0xPID'):
-#   weactf411, weactf412   any CMSIS-DAP; a WCH-Link must be in ARM mode
+#   weactf411              any CMSIS-DAP; a WCH-Link must be in ARM mode
 #                          (1a86:8011), hold ModeS while plugging it in
+#   weactf412              an ST-Link (as the C++ board), SWD, 1000 kHz
 #   nucleof411             the on-board ST-Link
 #   pico, pico2            the Raspberry Pi Debug Probe (2e8a:000c)
 #
@@ -45,14 +46,21 @@ KHZ="${ADAPTER_KHZ:-}"
 have_usb () { command -v lsusb >/dev/null && lsusb | grep -qi "ID $1"; }
 DEFAULT_PROBE=""
 case "$BOARD" in
-  weactf411|weactf412) have_usb 1a86:8011 && DEFAULT_PROBE="0x1a86 0x8011" ;;
+  weactf411) have_usb 1a86:8011 && DEFAULT_PROBE="0x1a86 0x8011" ;;
   pico|pico2)          have_usb 2e8a:000c && DEFAULT_PROBE="0x2e8a 0x000c" ;;
 esac
 PROBE="${OCD_PROBE:-$DEFAULT_PROBE}"
 PROBE_ARGS=()
 [[ -n "$PROBE" ]] && PROBE_ARGS=(-c "cmsis-dap vid_pid $PROBE")
 case "$BOARD" in
-  weactf411|weactf412)
+  weactf412)
+    # As the C++ board (test/boards/weactf412/openocd.cfg): an ST-Link, SWD,
+    # 1000 kHz.
+    CFG=(-f interface/stlink.cfg -c "transport select swd" -c "adapter speed ${KHZ:-1000}" -f target/stm32f4x.cfg)
+    RUN=(-c "init" -c "reset halt" -c "program \"$ELF\" verify"
+         -c "arm semihosting enable" -c "reset run")
+    ;;
+  weactf411)
     CFG=(-f interface/cmsis-dap.cfg "${PROBE_ARGS[@]}")
     CFG+=(-c "transport select swd" -c "adapter speed ${KHZ:-4000}" -f target/stm32f4x.cfg)
     RUN=(-c "init" -c "reset halt" -c "program \"$ELF\" verify"

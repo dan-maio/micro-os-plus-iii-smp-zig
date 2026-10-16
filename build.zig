@@ -59,8 +59,8 @@ const Test = struct {
     name: []const u8,
     /// Only on multi-CPU boards.
     smp_only: bool = false,
-    /// Only on this board: the test exists only as `test/<board>/<name>/`.
-    only: ?BoardId = null,
+    /// Only on these boards (empty: all): the test exists only as `test/<board>/<name>/`.
+    only: []const BoardId = &.{},
     /// C sources linked with the test (its main.zig enables `c_api` and
     /// `c_runtime`), and their flags.
     c_sources: []const []const u8 = &.{},
@@ -114,6 +114,8 @@ const board_tests = [_]struct { board: BoardId, name: []const u8 }{
     .{ .board = .pico2, .name = "exc-test" },
     .{ .board = .weactf411, .name = "spi-pipeline" },
     .{ .board = .nucleof411, .name = "mos-test1" },
+    .{ .board = .weactf412, .name = "mos-test1" },
+    .{ .board = .weactf412, .name = "uart-test1" },
     .{ .board = .pico2, .name = "smp-test-usb-cdc-acm" },
 };
 
@@ -153,8 +155,9 @@ const tests = [_]Test{
         .cmsis_rv = true,
     },
     .{ .name = "io-test" },
-    .{ .name = "spi-pipeline", .only = .weactf411 },
-    .{ .name = "mos-test1", .only = .nucleof411 },
+    .{ .name = "spi-pipeline", .only = &.{.weactf411} },
+    .{ .name = "mos-test1", .only = &.{ .nucleof411, .weactf412 } },
+    .{ .name = "uart-test1", .only = &.{.weactf412} },
     .{ .name = "smp-test-usb-cdc-acm", .smp_only = true },
 };
 
@@ -201,6 +204,8 @@ pub fn addFirmware(
     });
 
     fw.exe.root_module.addImport("uos", uos_mod);
+    // A board driver may use the kernel (the F412's RTOS-aware UART).
+    board_mod.addImport("uos", uos_mod);
     fw.exe.root_module.addImport("uos_board", board_mod);
     return fw;
 }
@@ -226,7 +231,7 @@ pub fn build(b: *std.Build) void {
     for (tests) |t| {
         if (only_test) |name| if (!std.mem.eql(u8, name, t.name)) continue;
         if (t.smp_only and board.ncpu < 2) continue;
-        if (t.only) |only| if (only != board_id) continue;
+        if (t.only.len > 0 and std.mem.indexOfScalar(BoardId, t.only, board_id) == null) continue;
         if (t.cmsis_rv and cmsis_rv == null) continue;
 
         const harness = b.createModule(.{ .root_source_file = b.path("test/harness.zig") });
