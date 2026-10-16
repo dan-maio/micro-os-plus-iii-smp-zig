@@ -52,7 +52,7 @@ The whole console is on the UART (115200 8N1, GPIO 14/15). The logs are
 
 Faithful ports of the C++ `test/rpi4b/` tests (the same banners and lines,
 structure and verdict); the deviations are stated in each `main.zig`. All
-pass on the board (2026-10-15):
+pass on the board (2026-10-16, with the `exit()` / `_Exit()` end of run):
 
 | Test | From (C++) | Raspberry Pi 4 B |
 | --- | --- | --- |

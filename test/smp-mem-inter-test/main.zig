@@ -2,7 +2,7 @@
 //! each block is filled by its owner, modified by another thread, and checked by its owner.
 //! (the C++ test/rpi4b/smp_mem_inter_test).
 //!
-//! 20 threads, 5 pinned on each of the 4 cores, 5 operations each. Thread i
+//! 20 threads, 5 pinned on each of the 4 cores, 15 operations each (C++ 30). Thread i
 //! works with thread (i + 1) % 20, in a ring. One operation of thread i:
 //!   1. allocate a block of 1 .. 512 MB (RAM above the first GB, mapped dynamically),
 //!      write a pattern into it and compute CRC32 (crc1) using Cortex-A72 CRC32 instruction;

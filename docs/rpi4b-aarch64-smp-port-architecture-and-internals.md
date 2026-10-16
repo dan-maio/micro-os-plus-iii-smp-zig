@@ -165,31 +165,34 @@ On ARMv8-A, data caching and multi-core exclusive monitor instructions (`ldaxr`/
 2. Exclusive load/store instructions fail or trap on multi-core accesses.
 3. Instruction prefetching and pipeline performance drop by orders of magnitude.
 
-In `src/mmu.zig`, a two-level identity mapping is configured:
-- **TCR_EL1**: `T0SZ = 32` (4 GB Virtual Address space), `TG0 = 0` (4 KB granule), `IRGN0/ORGN0 = 0b01` (Normal WB/WA Cacheable), `SH0 = 0b11` (Inner Shareable).
+In `src/mmu.zig` (`buildTables()`), the 4 GB identity map uses the 4 KB granule:
+- **TCR_EL1**: `T0SZ = 32` (4 GB virtual address space, the walk starts at level 1), `TG0 = 0` (4 KB granule), Normal WB/WA cacheable walks, Inner Shareable.
 - **MAIR_EL1**:
   - Attribute Index 0 (`0xFF`): Normal Memory, Outer/Inner Write-Back Non-Transient, Read/Write Allocate.
   - Attribute Index 1 (`0x04`): Device-nGnRnE (Device non-gathering, non-reordering, no early write acknowledgment).
-- **Translation Table**: 2048 Level-1 entries of 2 MB block descriptors:
-  - `0x00000000 .. 0x3B3FFFFF`: Normal RAM (`AttrIndx = 0`, `AF = 1`, `SH = 0b11`).
-  - `0xFC000000 .. 0xFFFFFFFF`: Device MMIO (`AttrIndx = 1`, `AF = 1`, `UXN = 1`, `PXN = 1`).
+- **Level 1**: four 1 GB entries, each pointing to a level-2 table of 2 MB entries:
+  - `l1[0]` → `l2_low`: `0x00000000 .. 0x3B3FFFFF` Normal RAM blocks (Inner Shareable); `0x3B400000 .. 0x3FFFFFFF` (the VideoCore's memory) invalid.
+  - `l1[1]`, `l1[2]` → `l2_hi`: `0x40000000 .. 0xBFFFFFFF`, every 2 MB entry a level-3 table whose 4 KB pages start **invalid** (the high-memory region of §5.7).
+  - `l1[3]` → `l2_high`: `0xC0000000 .. 0xFBFFFFFF` the rest of the high-memory region (level-3 tables, as above), `0xFC000000 .. 0xFFFFFFFF` Device blocks (`AttrIndx = 1`, `PXN = UXN = 1`).
 
 ```zig
-pub fn init() void {
-    const l1: [*]u64 = @ptrCast(&mmu_l1_table);
-    for (0..2048) |i| {
-        const pa: u64 = @as(u64, i) * (2 * 1024 * 1024);
-        if (pa >= 0xFC000000) {
-            // Device MMIO: 0xFC000000..0xFFFFFFFF
-            l1[i] = pa | (1 << 0) | (1 << 10) | (1 << 2) | (1 << 53) | (1 << 54);
-        } else if (pa < 0x3C000000) {
-            // DRAM: 0x00000000..0x3BFFFFFF
-            l1[i] = pa | (1 << 0) | (1 << 10) | (3 << 8); // Attr 0, Inner Shareable
-        } else {
-            l1[i] = 0; // Unmapped
-        }
-    }
+// First GB: RAM up to the VideoCore memory
+var i: usize = 0;
+while (i < RAM_ENTRIES) : (i += 1) {
+    l2_low[i] = makeBlock(@as(u64, i) * BLOCK_2M, ATTR_IDX_NORMAL, PTE_SH_IS);
 }
+// Last GB: devices from 0xFC000000
+i = 0;
+while (i < 512) : (i += 1) {
+    const pa = HIGH_GB + @as(u64, i) * BLOCK_2M;
+    if (pa >= DEVICE_START) l2_high[i] = makeBlock(pa, ATTR_IDX_DEVICE, PTE_SH_NONE) | PTE_PXN | PTE_UXN;
+}
+// High memory: 1504 level-3 tables, all pages invalid until mmu_hi_map()
+...
+l1[0] = @intFromPtr(&l2_low[0]) | PTE_VALID | PTE_TABLE;
+l1[1] = @intFromPtr(&l2_hi[0][0]) | PTE_VALID | PTE_TABLE;
+l1[2] = @intFromPtr(&l2_hi[1][0]) | PTE_VALID | PTE_TABLE;
+l1[3] = @intFromPtr(&l2_high[0]) | PTE_VALID | PTE_TABLE;
 ```
 
 ---
@@ -197,22 +200,21 @@ pub fn init() void {
 ## 4. Low-Level Internals & Context Switching
 
 ### 4.1 The 800-Byte AAPCS64 Context Frame
-On AArch64, the Procedure Call Standard (AAPCS64) mandates that 64-bit general-purpose registers `x0` through `x30` and SIMD/FP registers `q0` through `q31` (each 128-bit) must be preserved across preemptive interrupts and thread migrations:
+A preempted thread can be interrupted anywhere and resumed on another core, so the frame holds the whole register file: the general-purpose registers `x0` through `x30`, the exception state, and the SIMD/FP registers `q0` through `q31` (each 128-bit). The layout is `Frame` in `src/port.zig`, checked at compile time against `boards/rpi4b/startup.S`:
 
 ```
-Stack Offset   Saved Register      Size / Description
+Stack Offset     Saved Register      Size / Description
 -------------------------------------------------------------------------
-[sp + 784]     x30 (LR)            8 bytes (Link Register)
-[sp + 776]     x29 (FP)            8 bytes (Frame Pointer)
-[sp + 768]     ELR_EL1             8 bytes (Exception Link Register / PC)
-[sp + 760]     SPSR_EL1            8 bytes (Saved Program Status Register)
-[sp + 752]     FPSR                8 bytes (Floating-point Status Register)
-[sp + 744]     FPCR                8 bytes (Floating-point Control Register)
-[sp + 736]     Alignment Padding   8 bytes (Strict 16-byte frame alignment)
-[sp + 224..735]q0 - q31            512 bytes (32 × 128-bit NEON/FP registers)
-[sp + 0..223]  x0 - x28            224 bytes (General-purpose registers)
+[sp + 288..799]  q0 - q31            512 bytes (32 × 128-bit NEON/FP registers)
+[sp + 280]       Alignment Padding   8 bytes (16-byte alignment of the q block)
+[sp + 272]       FPCR                8 bytes (Floating-point Control Register)
+[sp + 264]       FPSR                8 bytes (Floating-point Status Register)
+[sp + 256]       ELR_EL1             8 bytes (Exception Link Register / PC)
+[sp + 248]       SPSR_EL1            8 bytes (Saved Program Status Register)
+[sp + 240]       x30 (LR)            8 bytes (Link Register)
+[sp + 0..239]    x0 - x29            240 bytes (General-purpose registers, x29 the frame pointer)
 -------------------------------------------------------------------------
-Total Frame Size: 800 bytes (800 % 16 == 0: strictly 16-byte AAPCS64 aligned)
+Total Frame Size: 800 bytes (800 % 16 == 0: 16-byte aligned)
 ```
 
 ### 4.2 The AAPCS64 Inlining Hazard & Assembly Wrapper
@@ -417,7 +419,7 @@ As the C++ rpi4b hardware build (`test/boards/rpi4b/include/uart.hpp`, `mirror_v
 
 ## 6. Hardware Test Results
 
-All 16 tests, run on 2026-10-15 on a Raspberry Pi 4 Model B, Raspberry Pi Debug Probe (CMSIS-DAP) on JTAG, `test/run-all.sh`. The time is the whole run: the OpenOCD watchdog reset, 10 s of boot, the load and the test.
+All 16 tests, run on 2026-10-16 on a Raspberry Pi 4 Model B, Raspberry Pi Debug Probe (CMSIS-DAP) on JTAG, `test/run-all.sh`, with the `exit()` / `_Exit()` end of run. The time is the whole run: the OpenOCD watchdog reset, 10 s of boot, the load and the test.
 
 | Test | From (C++ `test/rpi4b/`) | Result | Time |
 |---|---|---|---|
@@ -426,17 +428,17 @@ All 16 tests, run on 2026-10-15 on a Raspberry Pi 4 Model B, Raspberry Pi Debug 
 | `smp-test2` | `smp_test2` | **PASS** | 14 s |
 | `smp-test3` | `smp_test3` | **PASS** | 25 s |
 | `smp-test4` | `smp_test4` (load balancing) | **PASS** | 23 s |
-| `smp-mat-test` | `smp-mat-test` ($N=120, B=20$) | **PASS** | 16 s |
-| `smp-pro-cons-test` | `smp-pro-cons-test` | **PASS** | 19 s |
-| `mutex-stress` | harness suite (30 s) | **PASS** | 43 s |
-| `rtos-apis` | harness suite | **PASS** | 24 s |
+| `smp-mat-test` | `smp-mat-test` ($N=120, B=20$) | **PASS** | 15 s |
+| `smp-pro-cons-test` | `smp-pro-cons-test` | **PASS** | 20 s |
+| `mutex-stress` | harness suite (30 s) | **PASS** | 44 s |
+| `rtos-apis` | harness suite | **PASS** | 23 s |
 | `cmsis-os-validator` | harness suite | **PASS** | 28 s |
 | `sd_test` | `sd_test` (FatFs, `/tests`) | **PASS** | 19 s |
 | `smp-num-test` | `smp-num-test` (FatFs, `tests/num.txt`) | **PASS** | 82 s |
-| `smp-pipeline-test` | `smp-pipeline-test` (FatFs, `tests/pipe.dat`) | **PASS** | 45 s |
-| `smp-mat-sdcard-test` | `smp-mat-sdcard-test` ($N=200, B=20$) | **PASS** | 17 s |
-| `smp-mem-test` | `smp_mem_test` | **PASS** | 51 s |
-| `smp-mem-inter-test` | `smp_mem_inter_test` (15 operations per thread, C++ 30) | **PASS** | 99 s |
+| `smp-pipeline-test` | `smp-pipeline-test` (FatFs, `tests/pipe.dat`) | **PASS** | 46 s |
+| `smp-mat-sdcard-test` | `smp-mat-sdcard-test` ($N=200, B=20$) | **PASS** | 16 s |
+| `smp-mem-test` | `smp_mem_test` | **PASS** | 48 s |
+| `smp-mem-inter-test` | `smp_mem_inter_test` (15 operations per thread, C++ 30) | **PASS** | 106 s |
 
 Deviations from C++, each stated in its test: the matrix tests' pool and solver stacks (§5.5); `smp-mem-inter-test`'s operation count (every run must end within 3 minutes); `smp-num-test` formats its floating-point line with `std.fmt` (the kernel's `printf` has no floating point); the kernel prints its startup banner and creates the secondary cores' idle threads itself.
 
@@ -469,7 +471,7 @@ test/run-all.sh smp-test2 sd_test                                 # some
 - **AArch64 port**: `micro-os-plus-iii-aarch64/`
   - `boards/rpi4b/`: `board.zig` (PL011, LED, secondary release), `startup.S` (EL drop, vectors, context switch, IRQ entry), `linker.ld`, `openocd.cfg`, `reset.cfg`
   - `src/`: `arch.zig`, `gic.zig`, `mmu.zig` (the identity map and the high-memory mapper), `port.zig` (the port contract), `semihosting.zig`, `faults.zig`, `c_printf.c` (the `printf` family for the C sources)
-  - `drivers/`: `sd.zig` (EMMC2), `fatfs.zig` and `fatfs/` (FatFs), `flatfs.zig` (not used on the board)
+  - `drivers/`: `sd.zig` (EMMC2), `fatfs.zig`, `ff_api.h` and `fatfs/` (FatFs R0.15a)
   - `test/`: the 16 tests, `board.zig`, `start.zig`, `hw.sh`, `run-all.sh`
 
 ### 8.2 Build Commands
