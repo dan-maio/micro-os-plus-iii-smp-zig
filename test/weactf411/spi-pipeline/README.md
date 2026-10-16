@@ -57,55 +57,53 @@ Five concurrent threads cooperate to stream the firmware image from on-chip Flas
 
 ## 3. Physical Silicon Execution Results
 
-Hardware test executed on **WeAct Studio Black Pill (STM32F411CE)** connected via **WCH-Link CMSIS-DAP**:
+Run on 2026-10-16 on the **WeAct Studio Black Pill (STM32F411CE)** through the **WCH-Link CMSIS-DAP** (`test/run-all.sh weactf411`; the semihosting log, `zig-out/hw-logs/weactf411/spi-pipeline.log`, with the per-cycle snapshots left out). The CRCs depend on the image, so they change from build to build.
 
 ```text
-=============================================
-  WeAct-F411CE  spi-pipeline  store: SPI flash
-  32768 B -> 128 chunks -> 44032 B -> 32768 B
-=============================================
-spi-pipeline: image 32768 bytes at 0x08000000, source 32768, crc0 0x4c63e5da
+spi-pipeline: heap 16384 bytes
+spi-pipeline: SPI transport polled (bulk from 16 bytes)
+spi-pipeline: JEDEC 0xef 0x40 0x18 -> SPI flash store
+spi-pipeline: enc 348 KiB @ 0x00100000, dec 260 KiB @ 0x00157000 (8 iterations)
+spi-pipeline: enc 348 KiB @ 0x100000, dec 260 KiB @ 0x157000
+spi-pipeline: fs done
+spi-pipeline: image 32768 bytes at 0x08000000, source 32768, crc0 0x08f2dd12
 spi-pipeline: 128 chunks of 256 (last 256), 44032 encoded, 18 ms per chunk
-
-[   17807 ms] iter 0: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (5 fresh), 0 error(s), heap 16384 B
-[   21867 ms] iter 1: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (4 fresh), 0 error(s), heap 16384 B
-[   25927 ms] iter 2: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (4 fresh), 0 error(s), heap 16384 B
-[   29987 ms] iter 3: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (4 fresh), 0 error(s), heap 16384 B
-[   34047 ms] iter 4: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (4 fresh), 0 error(s), heap 16384 B
-[   38107 ms] iter 5: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (4 fresh), 0 error(s), heap 16384 B
-[   42167 ms] iter 6: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (4 fresh), 0 error(s), heap 16384 B
-[   42112 ms] iter 7: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (4 fresh), 0 error(s), heap 16384 B
-
+[   17192 ms] iter 0: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
+[   20760 ms] iter 1: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
+[   24328 ms] iter 2: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
+[   27896 ms] iter 3: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
+[   31462 ms] iter 4: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
+[   35028 ms] iter 5: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
+[   38596 ms] iter 6: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
+[   42171 ms] iter 7: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
 spi-pipeline: enc partition, 354336 bytes used
-  enc0.b64          44032 bytes  crc 0x69524572
-  enc1.b64          44032 bytes  crc 0x69524572
-  enc2.b64          44032 bytes  crc 0x69524572
-  enc3.b64          44032 bytes  crc 0x69524572
-  enc4.b64          44032 bytes  crc 0x69524572
-  enc5.b64          44032 bytes  crc 0x69524572
-  enc6.b64          44032 bytes  crc 0x69524572
-  enc7.b64          44032 bytes  crc 0x69524572
-
+  enc0.b64          44032 bytes  crc 0x59d38ba1
+  enc1.b64          44032 bytes  crc 0x59d38ba1
+  enc2.b64          44032 bytes  crc 0x59d38ba1
+  enc3.b64          44032 bytes  crc 0x59d38ba1
+  enc4.b64          44032 bytes  crc 0x59d38ba1
+  enc5.b64          44032 bytes  crc 0x59d38ba1
+  enc6.b64          44032 bytes  crc 0x59d38ba1
+  enc7.b64          44032 bytes  crc 0x59d38ba1
 spi-pipeline: dec partition, 264224 bytes used
-  dec0.bin          32768 bytes  crc 0x4c63e5da
-  dec1.bin          32768 bytes  crc 0x4c63e5da
-  dec2.bin          32768 bytes  crc 0x4c63e5da
-  dec3.bin          32768 bytes  crc 0x4c63e5da
-  dec4.bin          32768 bytes  crc 0x4c63e5da
-  dec5.bin          32768 bytes  crc 0x4c63e5da
-  dec6.bin          32768 bytes  crc 0x4c63e5da
-  dec7.bin          32768 bytes  crc 0x4c63e5da
-
+  dec0.bin          32768 bytes  crc 0x08f2dd12
+  dec1.bin          32768 bytes  crc 0x08f2dd12
+  dec2.bin          32768 bytes  crc 0x08f2dd12
+  dec3.bin          32768 bytes  crc 0x08f2dd12
+  dec4.bin          32768 bytes  crc 0x08f2dd12
+  dec5.bin          32768 bytes  crc 0x08f2dd12
+  dec6.bin          32768 bytes  crc 0x08f2dd12
+  dec7.bin          32768 bytes  crc 0x08f2dd12
 pipe 1: 8 of 8 iterations wrote 128 chunks and saw the final one
 pipe 2: 8 of 8 produced 44032 encoded and 32768 decoded bytes
-pipe 3: 8 of 8 decoded back to crc0 0x4c63e5da
+pipe 3: 8 of 8 decoded back to crc0 0x08f2dd12
 pipe 4: 8 of 8 ran 5 blink cycles with snapshots that never shrank
 pipe 5: base64 matches the RFC 4648 vectors: true
 pipe 6: banner printed 4 lines at console-lock depth 2: true
 spi-pipeline: 8 of 8 iterations clean, heap 16384 bytes
 spi-pipeline: PASS
 RESULT: PASS
-Main thread stack: 1264/8188 bytes used
+Main thread stack: 2116/8188 bytes used
 Interrupts stack: 536/2048 bytes used
 ```
 

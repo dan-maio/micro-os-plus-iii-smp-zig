@@ -76,5 +76,5 @@ From `micro-os-plus-iii-cortexm`:
 
 ### Run on Hardware
 ```bash
-bash test/hw.sh pico zig-out/firmware/pico/smp-test-usb-cdc-acm.elf 30
+bash test/hw.sh pico zig-out/firmware/pico/smp-test-usb-cdc-acm.elf 180   # then open the gadget's port and send Escape
 ```

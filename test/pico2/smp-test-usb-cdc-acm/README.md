@@ -32,8 +32,8 @@ The test distributes responsibilities between the two Cortex-M33 cores to ensure
   │  Core 1 (Cortex-M33 #1)                                       │
   │  └── blink_th (pinned Core 1):                                │
   │        - Hardware heartbeat on onboard LED (GPIO25)           │
-  │        - Toggles every 500 ms                                 │
-  │        - Increments global atomic beat counter                │
+  │        - Toggles every 400 ms while unmounted                 │
+  │        - 900 ms on / 100 ms off once mounted                  │
   │        - Proves independent execution alongside Core 0 USB    │
   └───────────────────────────────────────────────────────────────┘
 ```
@@ -71,16 +71,11 @@ The test distributes responsibilities between the two Cortex-M33 cores to ensure
 
 ## 3. Silicon Hardware Execution Results
 
-Executed on physical silicon using the **Raspberry Pi Debug Probe (`2e8a:000c`)** over SWD at 5000 kHz:
+Run on 2026-10-16 with the **Raspberry Pi Debug Probe (`2e8a:000c`)** over SWD at 5000 kHz, after a board reset (`zig-out/hw-logs/pico2/smp-test-usb-cdc-acm.log`, the lines typed in a terminal on the gadget's `/dev/ttyACM*` abridged):
 
 ```text
-== pico2 : smp-test-usb-cdc-acm ==
-Info : Using CMSIS-DAPv2 interface with VID:PID=0x2e8a:0x000c, serial=E6633861A34C2E38
-Info : [rp2350.cm0] Cortex-M33 r1p0 processor detected
-Info : [rp2350.cm1] Cortex-M33 r1p0 processor detected
-** Verified OK **
-
 µOS++ IIIe version 7.0.0 (Zig 0.17.0)
+Copyright (c) 2007-2025 Liviu Ionescu
 Board: Raspberry Pi Pico 2 (RP2350, 2x Cortex-M33)
 Scheduler: µOS++ RP2350 SMP, 2 cores, PendSV, SIO spinlock
 System clock: 150000000 Hz
@@ -88,40 +83,29 @@ Scheduler frequency: 1000 ticks/sec
 Default stack size: 4096 bytes
 Built with Zig 0.17.0, safe
 
+scheduler.start()
+
 =============================================
   Pico 2 / RP2350 - micro-os-plus-iii
   smp-test-usb-cdc-acm : USB virtual serial I/O
+  (µOS++ Zig API only, no std:: layer)
 =============================================
 core 0: creating USB and console threads on core 0, blink thread on core 1...
 core 0: launching core 1 (bootrom FIFO handshake)...
-Info : [rp2350.cm1] external reset detected
 core 0: core 1 launched; SMP running.
-[      10 ms] blink: core=1 beat=1
 core 0: CDC-ACM up. Open gadget port (Cafe:4013), type line,
-        press Return; send Escape (0x1B) to end test.
+        press Return; the line is echoed and mirrored here.
+        send Escape to finish.
 [usb] mounted
-[     513 ms] blink: core=1 beat=2
-[    1053 ms] blink: core=1 beat=3
-[    1653 ms] blink: core=1 beat=4
-[    2253 ms] blink: core=1 beat=5
-[    2854 ms] blink: core=1 beat=6
-[    3455 ms] blink: core=1 beat=7
-[    4055 ms] blink: core=1 beat=8
-[    4655 ms] blink: core=1 beat=9
-[    5255 ms] blink: core=1 beat=10
-[    5856 ms] blink: core=1 beat=11
-[    6457 ms] blink: core=1 beat=12
-[    7056 ms] blink: core=1 beat=13
-[    7657 ms] blink: core=1 beat=14
-[    8256 ms] blink: core=1 beat=15
-[    8859 ms] blink: core=1 beat=16
-[    9457 ms] blink: core=1 beat=17
-
-[cdc-test] 20 beats verified across Core 0 (USB) & Core 1 (Heartbeat).
+[line] jhkhjkjh
+[line] lklkjljk
 RESULT: PASS
-
-smp-test-usb-cdc-acm     PASS  (16s)
+_Exit()
+Main thread stack: 1576/8188 bytes used
+Interrupts stack: 528/2048 bytes used
 ```
+
+The test runs until the host sends Escape (0x1B) in a line; then `RESULT: PASS (host sent Escape)` goes to the UART and one `RESULT: PASS` to semihosting, as in C++ (`hw_result::ok()`). Without a reset after another test it panics at start ("attempt to use null value"): the USB controller keeps its state across a debugger reset.
 
 ---
 
@@ -135,5 +119,5 @@ From `micro-os-plus-iii-cortexm`:
 
 ### Run on Hardware
 ```bash
-bash test/hw.sh pico2 zig-out/firmware/pico2/smp-test-usb-cdc-acm.elf 30
+bash test/hw.sh pico2 zig-out/firmware/pico2/smp-test-usb-cdc-acm.elf 180   # then open the gadget's port and send Escape
 ```

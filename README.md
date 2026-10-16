@@ -13,7 +13,7 @@ Cortex-M0+) and RP2350 (two Cortex-M33, SIO spinlocks and FIFO IPIs).
 | `pico2` | Raspberry Pi Pico 2 (RP2350) | 2× Cortex-M33F, SMP | Raspberry Pi Debug Probe (`2e8a:000c`) |
 | `pico` | Raspberry Pi Pico (RP2040) | 2× Cortex-M0+, SMP | Raspberry Pi Debug Probe (`2e8a:000c`) |
 | `weactf411` | WeAct Black Pill (STM32F411CE) | Cortex-M4F | WCH-Link in ARM mode (`1a86:8011`) |
-| `nucleof411`, `weactf412` | NUCLEO-F411RE, WeAct F412RE | Cortex-M4F | builds only, not tested on hardware |
+| `nucleof411`, `weactf412` | NUCLEO-F411RE, WeAct F412RE | Cortex-M4F | declared in `build.zig`, but no board file yet (`src/boards/<board>.zig`): they do not build |
 
 ## Requirements
 
@@ -39,7 +39,8 @@ bash test/hw.sh pico2 zig-out/firmware/pico2/smp-test2.elf 120
 The images land in `zig-out/firmware/<board>/<test>.elf`. `test/hw.sh`
 programs the image with OpenOCD (no GDB) and follows the semihosting
 output until `RESULT: PASS` or `RESULT: FAIL`; the log is
-`zig-out/hw-logs/<board>/<test>.log`. The UARTs stay free for a terminal.
+`zig-out/hw-logs/<board>/<test>.log`. The trace also goes to the board's
+UART, for a terminal; the runner never opens a serial port.
 
 The RP2040/RP2350 keep peripheral state (USB, SIO) across a debugger reset:
 power cycle or reset the Pico / Pico 2 between tests, or a test may fail at start
@@ -60,13 +61,13 @@ in `test/<test>/`.
 | Test | From (C++) | Pico 2 | Pico | WeAct F411 |
 | --- | --- | --- | --- | --- |
 | `smp-test0` | `test/pico{,2}/smp-test0` | PASS | PASS | PASS |
-| `smp-test1` | `test/pico{,2}/smp-test1` | PASS | PASS | builds |
+| `smp-test1` | `test/pico{,2}/smp-test1` | PASS | PASS | PASS |
 | `smp-test2` | `test/pico{,2}/smp-test2` (affinity) | PASS | PASS | SMP only |
 | `smp-test3` | `test/pico{,2}/smp-test3` (resume IPI, kernel and direct) | PASS | PASS | SMP only |
 | `smp-test4` | `test/pico{,2}/smp-test4` | PASS | PASS | SMP only |
 | `smp-test5` | `test/pico{,2}/smp-test5` | PASS | PASS | Pico / Pico 2 only |
-| `smp-mat-test` | `test/pico{,2}/smp-mat-test` | PASS, speedup 2.016× | PASS, speedup 1.183× | builds |
-| `sc-test-ko` | `test/pico{,2}/sc-test-ko` (single core) | PASS, 10/10 | PASS, 10/10 | builds |
+| `smp-mat-test` | `test/pico{,2}/smp-mat-test` | PASS, speedup 2.016× | PASS, speedup 1.183× | PASS (one CPU) |
+| `sc-test-ko` | `test/pico{,2}/sc-test-ko` (single core) | PASS, 10/10 | PASS, 10/10 | PASS |
 | `smp-test-ko` | `test/pico{,2}/smp-test-ko` | PASS, 10/10 | PASS, 10/10 | Pico / Pico 2 only |
 | `exc-test` | `test/pico{,2}/exc-test` | PASS | PASS | Pico / Pico 2 only |
 | `smp-test-usb-cdc-acm` | `test/pico{,2}/smp-test-usb-cdc-acm` | PASS (after a reset) | PASS | Pico / Pico 2 only |
@@ -74,11 +75,12 @@ in `test/<test>/`.
 | `mutex-stress` | harness suite `mutex-stress` | PASS | PASS | PASS |
 | `rtos-apis` | harness suite `rtos-apis` (C++, C, ISO, POSIX I/O parts) | PASS | PASS | PASS |
 | `cmsis-os-validator` | harness suite `cmsis-os-validator` (Arm CMSIS-RTOS validator) | PASS, 60/60 | PASS, 60/60 | PASS, 60/60 |
-| `io-test` | the `std.Io` suite (no C++ counterpart) | PASS, 25/25 | PASS, 25/25 | builds |
+| `io-test` | the `std.Io` suite (no C++ counterpart) | PASS, 25/25 | PASS, 25/25 | PASS, 25/25 |
 | `spi-pipeline` | `test/weactf411/spi-pipeline` | WeAct only | WeAct only | PASS, 8/8 |
 
-"builds" means the test compiles for the board but was not run on it in
-the last round.
+Last full runs (`test/run-all.sh <board>`, 2026-10-16): Pico 2 16/16,
+Pico 16/16, WeAct F411 10/10, all ending through `exit()` / `_Exit()` with
+one `RESULT` line each.
 
 The harness suites run as in the C++ pico2 harness build: one CPU, with the
 suite's `os-app-config.h` values in `uos_options`. Their C parts are the
