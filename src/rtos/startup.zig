@@ -20,6 +20,7 @@
 //! port (semihosting `SYS_EXIT` on the test boards).
 
 const std = @import("std");
+const semihosting = @import("../semihosting.zig");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 
@@ -53,7 +54,8 @@ pub fn run(comptime app_main: anytype) noreturn {
     const Main = struct {
         fn trampoline(_: ?*anyopaque) ?*anyopaque {
             trace.puts("");
-            terminate(callMain(app_main));
+            // As the C++ trampoline: main()'s value goes to exit().
+            exit(callMain(app_main));
         }
     };
 
@@ -117,11 +119,22 @@ fn callMain(comptime app_main: anytype) u8 {
     }
 }
 
-/// End the run: print the statistics, then let the port terminate
-/// (semihosting `SYS_EXIT` on the test boards, a reset or a halt otherwise).
+/// End the run (`exit()`): trace it, then `terminate()`. (Zig has no
+/// atexit handlers or static destructors to run first.)
+pub fn exit(code: u8) noreturn {
+    trace.print("exit({d})\n", .{code});
+    terminate(code);
+}
+
+/// End the run at once (`_Exit()`): print the statistics, then let the port
+/// terminate (`os_terminate()`: a semihosting SYS_EXIT on the test boards);
+/// a port without `terminate()` ends with the semihosting SYS_EXIT itself
+/// when it has semihosting, and halts otherwise.
 pub fn terminate(code: u8) noreturn {
+    trace.print("_Exit()\n", .{});
     goodbye();
     if (@hasDecl(port, "terminate")) port.terminate(code);
+    if (semihosting.available) semihosting.exit(code);
     _ = interrupts.CriticalSection.enter();
     while (true) port.scheduler.waitForInterrupt();
 }

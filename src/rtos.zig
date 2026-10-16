@@ -45,3 +45,4 @@ pub const Timer = timer.Timer;
 pub const startup = @import("rtos/startup.zig");
 pub const run = startup.run;
 pub const terminate = startup.terminate;
+pub const exit = startup.exit;

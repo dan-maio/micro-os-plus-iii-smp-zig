@@ -6,6 +6,8 @@
 //!   string.h   strlen, strcmp, strncmp, strcpy, strncpy, strchr, strrchr
 //!              (memcpy, memset, memmove and memcmp come from compiler_rt)
 //!   assert.h   assert() -> __assert_func() -> the Zig panic
+//!   stdlib.h   exit(), _Exit(), _exit(), abort(): the end of the run
+//!              (uos.rtos.exit(), uos.rtos.terminate())
 //!   trace.h    trace_printf, trace_vprintf, trace_puts, trace_putchar,
 //!              trace_write, trace_flush (cmsis-plus/diag/trace.h); these
 //!              also with `Options.c_api`, on hosted targets too
@@ -46,6 +48,10 @@ comptime {
             .{ "strchr", &strchr },
             .{ "strrchr", &strrchr },
             .{ "__assert_func", &assertFunc },
+            .{ "exit", &cExit },
+            .{ "_Exit", &cQuickExit },
+            .{ "_exit", &cQuickExit },
+            .{ "abort", &cAbort },
         }) |e| @export(e[1], .{ .name = e[0], .linkage = weak });
     }
     // The trace C API (cmsis-plus/diag/trace.h) is part of the µOS++ C API:
@@ -422,4 +428,30 @@ fn assertFunc(file: [*:0]const u8, line: c_int, func: ?[*:0]const u8, expr: [*:0
     std.debug.panic("assertion \"{s}\" failed: file \"{s}\", line {d}, function: {s}", .{
         std.mem.span(expr), std.mem.span(file), line, if (func) |f| std.mem.span(f) else "?",
     });
+}
+
+// ----------------------------------------------------------------------------
+// stdlib.h: the end of the run (the C++ src/libc/stdlib/exit.c).
+
+const rtos = @import("rtos.zig");
+
+fn exitCode(code: c_int) u8 {
+    return @truncate(@as(c_uint, @bitCast(code)));
+}
+
+/// `exit()`: trace it, then `_Exit()`.
+fn cExit(code: c_int) callconv(.c) noreturn {
+    rtos.exit(exitCode(code));
+}
+
+/// `_Exit()`, `_exit()`: the statistics, then the port's `os_terminate()`
+/// (a semihosting SYS_EXIT on the test boards).
+fn cQuickExit(code: c_int) callconv(.c) noreturn {
+    rtos.terminate(exitCode(code));
+}
+
+/// `abort()`: "abort(), exiting...", then `_Exit(1)`.
+fn cAbort() callconv(.c) noreturn {
+    trace.puts("abort(), exiting...");
+    rtos.terminate(1);
 }

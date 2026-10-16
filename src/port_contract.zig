@@ -54,6 +54,16 @@
 //!
 //! // Optional: the interrupt (MSP) stack, for the idle check and statistics.
 //! pub fn interruptStack() ?[]StackElement;
+//!
+//! // Optional: end the run (`os_terminate()`), from `uos.rtos.terminate()`.
+//! pub fn terminate(code: u8) noreturn;
+//!
+//! // Optional: the ARM semihosting trap, for `uos.semihosting`.
+//! pub const semihosting = struct {
+//!     pub fn call(op: usize, arg: usize) usize; // BKPT 0xAB, SVC, HLT...
+//!     pub const exit_by_block: bool;           // SYS_EXIT block or value
+//!     pub fn attached() bool;                  // optional: a debugger is there
+//! };
 //! ```
 //!
 //! The scheduler, the threads and the lists are the kernel's; the port calls

@@ -21,6 +21,8 @@
 //! | `os::estd` (ISO threads)          | `uos.Io` (`std.Io`)            |
 //! | `os::posix` (POSIX I/O)           | `uos.Io` files on `uos.io.devices` |
 //! | `os-c-api.h`                      | `uos.c_api` (exported `os_*`)  |
+//! | `cmsis-plus/arm/semihosting.h`    | `uos.semihosting`              |
+//! | `exit()`, `_Exit()`               | `uos.rtos.exit()`, `uos.rtos.terminate()` |
 //! | `os-app-config.h` macros          | `uos_options` in the root file |
 
 const std = @import("std");
@@ -33,6 +35,7 @@ pub const port = @import("uos_port");
 pub const rtos = @import("rtos.zig");
 pub const memory = @import("memory.zig");
 pub const trace = @import("trace.zig");
+pub const semihosting = @import("semihosting.zig");
 pub const Io = @import("io/Io.zig");
 pub const io = struct {
     pub const devices = @import("io/devices.zig");

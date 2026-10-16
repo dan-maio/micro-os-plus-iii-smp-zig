@@ -28,7 +28,8 @@ micro-os-plu-iii-smp-zig-pr-github/
 | `src/io/devices.zig` | Char and block devices, partitions, locked devices, file descriptors, RAM disk | `posix-io/` |
 | `src/c_api.zig`, `src/c_storage.zig` | The µOS++ C API (`os_thread_construct()`, `os_mutex_lock()`, ... — the 196 functions of `os-c-api.h`) | `src/rtos/os-c-wrapper.cpp` |
 | `src/cmsis_os.zig` | The CMSIS-RTOS v1 API (`osThreadCreate()`, `osSignalWait()`, `osMailPut()`, ...) | `os-c-wrapper.cpp`, legacy part |
-| `src/libc.zig` | A minimal C runtime for freestanding C code: `printf` & co., string functions, `assert`, `trace_printf` | newlib + `src/diag/` |
+| `src/libc.zig` | A minimal C runtime for freestanding C code: `printf` & co., string functions, `assert`, `exit`/`_Exit`/`abort`, `trace_printf` | newlib + `src/diag/`, `src/libc/stdlib/exit.c` |
+| `src/semihosting.zig` | ARM semihosting, every operation: the console, host files (open, read, write, seek, flen, istty, remove, rename, tmpnam), the host (system, errno, command line, heap info), time (clock, time, elapsed, tickfreq) and SYS_EXIT; the port supplies the trap | `cmsis-plus/arm/semihosting.h`, `src/semihosting/c-syscalls-semihosting.cpp` |
 | `src/config.zig` | `uos.Options`, the configuration | `os-app-config.h` |
 | `src/port_contract.zig` | What a port must provide, checked at compile time | `rtos/port/*.h` |
 | `include/` | The C headers: `cmsis-plus/rtos/os-c-api.h`, `os-c-decls.h`, `cmsis-plus/legacy/cmsis_os.h`, `cmsis-plus/diag/trace.h`, and `c/` (the minimal C runtime) | `include/` |
