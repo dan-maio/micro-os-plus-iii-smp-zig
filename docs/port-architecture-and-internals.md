@@ -11,6 +11,7 @@ This project delivers a complete, idiomatic **Zig (0.17.0)** and **MicroZig** po
 1. **Raspberry Pi Pico 2 (RP2350)**: Dual ARM Cortex-M33 cores operating in true Symmetric Multi-Processing (SMP) mode with hardware spinlocks and single-precision Floating Point Units (FPUs).
 2. **Raspberry Pi Pico (RP2040)**: Dual ARM Cortex-M0+ (ARMv6-M) cores operating in true SMP mode at 125 MHz with SIO hardware spinlock 0 and per-core SIO FIFO interrupts (`SIO_IRQ_PROC0`/`SIO_IRQ_PROC1`).
 3. **WeAct Studio Black Pill (STM32F411CE)**: Single ARM Cortex-M4F core with hardware FPU, demonstrating single-core real-time preemption and hardware context switching.
+4. **ST Nucleo-F411RE (STM32F411RE)**: the same Cortex-M4F on its reset HSI (16 MHz), with the integrated ST-Link and an interrupt-driven USART2 console.
 
 Across all microcontrollers, all hardware test suites have been verified on physical silicon with a **100% pass rate**.
 
@@ -1470,7 +1471,17 @@ All 10 pass (`test/run-all.sh weactf411`, 2026-10-16).
 
 ---
 
-### 10.4 POSIX Host (GNU/Linux x86_64, host threads as CPUs)
+### 10.4 ST Nucleo-F411RE (STM32F411RE Cortex-M4F Single-Core)
+*The integrated ST-Link (`0483:374b`), OpenOCD's `board/st_nucleo_f4.cfg` with `connect_assert_srst`, as the C++ board. The core stays on the reset HSI (16 MHz), as the C++ `SystemInit()` leaves it. The console is USART2 (the ST-Link's virtual COM port), interrupt driven: a polled 12-character line takes about 1 ms at 115200 baud, and `rtos-apis` prints from a 1 ms periodic timer callback; polled, the timer was always overdue and the threads starved (semihosting costs no tick time: the core and SysTick are halted while OpenOCD serves the call).*
+
+| Test | Status | Notes |
+|---|---|---|
+| `mos-test1` | **PASS** | The C++ board's acceptance test: 3 producers, 3 consumers, 2 down-counting consumers and an LED thread over a mutex, a recursive mutex and two counting semaphores; 5 s. |
+| `rtos-apis` | **PASS** | All four parts. |
+| `mutex-stress` | **PASS** | 35 s report: sigma 7, delta within −6 %…+3 %. |
+| `cmsis-os-validator` | **PASS** | 60/60. |
+
+### 10.5 POSIX Host (GNU/Linux x86_64, host threads as CPUs)
 *The `micro-os-plus-iii-posix-arch` port; `test/run-all.sh` runs all of them. Outputs compared with the C++ native builds of the `smp` branch.*
 
 | Test | Status | Notes |
