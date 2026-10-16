@@ -222,7 +222,7 @@ fn pinger(_: ?*anyopaque) ?*anyopaque {
             // The verdict on the debug channel and the semihosting exit
             // (hw_result::ok()/fail() in C++).
             semihosting.write(if (ok) "RESULT: PASS\n" else "RESULT: FAIL\n");
-            semihosting.exit(if (ok) 0 else 1);
+            uos.rtos.terminate(if (ok) 0 else 1);
         }
     }
 }

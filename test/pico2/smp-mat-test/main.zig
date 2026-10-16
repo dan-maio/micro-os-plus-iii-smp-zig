@@ -630,5 +630,5 @@ fn osMain() u8 {
     writeStr("---------------------------------------------\n");
 
     // The verdict and the semihosting exit (hw_result::ok()/fail() in C++).
-    semihosting.exit(if (pass) 0 else 1);
+    uos.rtos.terminate(if (pass) 0 else 1);
 }

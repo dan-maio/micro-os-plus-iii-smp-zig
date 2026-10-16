@@ -427,5 +427,5 @@ fn osMain() u8 {
 
 fn semihostExit() void {
     semihosting.write("RESULT: PASS\n");
-    semihosting.exit(0);
+    uos.rtos.terminate(0);
 }

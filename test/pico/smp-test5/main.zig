@@ -317,7 +317,7 @@ fn producer(_: ?*anyopaque) ?*anyopaque {
     // The summary for the runner's log, the verdict, and the semihosting
     // exit (hw_result::ok()/fail() in C++).
     semihosting.write(summary);
-    semihosting.exit(if (ok) 0 else 1);
+    uos.rtos.terminate(if (ok) 0 else 1);
 }
 
 var prod_stack: [1024]uos.port.StackElement align(8) = undefined;

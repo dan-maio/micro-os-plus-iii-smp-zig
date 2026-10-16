@@ -106,5 +106,5 @@ pub fn main() void {
     semihosting.write(if (ok) "RESULT: PASS\n" else "RESULT: FAIL\n");
 
     // Ends the run with a semihosting SYS_EXIT carrying the verdict.
-    semihosting.exit(if (ok) 0 else 1);
+    uos.rtos.terminate(if (ok) 0 else 1);
 }

@@ -390,7 +390,7 @@ fn controller(_: ?*anyopaque) ?*anyopaque {
     // The verdict on the debug channel and the semihosting exit
     // (hw_result::ok()/fail() in C++).
     semihosting.write(if (all_pass) "RESULT: PASS\n" else "RESULT: FAIL\n");
-    semihosting.exit(if (all_pass) 0 else 1);
+    uos.rtos.terminate(if (all_pass) 0 else 1);
 }
 
 var ctl_stack: [1024]uos.port.StackElement align(8) = undefined;

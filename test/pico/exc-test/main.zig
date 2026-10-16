@@ -165,5 +165,5 @@ pub fn main() void {
     semihosting.write(std.fmt.bufPrint(&b, "systick={d} pendsv={d}\n", .{ ld(&g_systick), ld(&g_pendsv) }) catch "");
     semihosting.write(if (ok) "RESULT: PASS\n" else "RESULT: FAIL\n");
 
-    semihosting.exit(if (ok) 0 else 1);
+    uos.rtos.terminate(if (ok) 0 else 1);
 }
