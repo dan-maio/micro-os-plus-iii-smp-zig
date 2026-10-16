@@ -46,12 +46,38 @@
 The Zig port of **µOS++ IIIe** separates the portable, architecture-independent RTOS kernel from the architecture and board support packages. Each architecture lives in its own sibling Git repository alongside the core kernel:
 
 ```text
-workspace/
-├── micro-os-plus-iii/              # Portable RTOS kernel, C/CMSIS APIs, memory allocators, shared test suites
-├── micro-os-plus-iii-cortexm/      # ARMv6-M / ARMv7-M / ARMv8-M port (STM32F4, RP2040 Pico, RP2350 Pico 2 SMP)
-├── micro-os-plus-iii-aarch32/      # ARMv7-A (AArch32) SMP port (Luckfox Lyra RK3506, 3x Cortex-A7)
-├── micro-os-plus-iii-aarch64/      # ARMv8-A (AArch64) SMP port (Raspberry Pi 4 B BCM2711, 4x Cortex-A72)
-└── micro-os-plus-iii-posix-arch/   # Synthetic POSIX SMP port (Linux host process, pthreads + ucontext + POSIX timers)
+┌────────────────────────────────────────────────────────────────────────────┐
+│                           Workspace Ecosystem                              │
+├─────────────────────────────┬──────────────────────────────────────────────┤
+│ micro-os-plus-iii/          │ Portable RTOS kernel, C/CMSIS-RTOS v1 APIs,  │
+│  (Core Kernel Package)      │ memory allocators, and shared test suites    │
+├─────────────────────────────┴──────────────────────────────────────────────┤
+│                   ▲                                    │                   │
+│     @import("uos")│          port_contract.validate()  │@import("uos_port")│
+│                   │                                    ▼                   │
+├───────────────────┴────────────────────────────────────┴───────────────────┤
+│                     Sibling Architecture Repositories                      │
+│                                                                            │
+│  ┌──────────────────────────┐  ┌────────────────────────────────────────┐  │
+│  │ micro-os-plus-iii-       │  │ ARMv6-M / ARMv7-M / ARMv8-M Port       │  │
+│  │ cortexm/                 │  │ • RP2350 Pico 2 (2x Cortex-M33 SMP)    │  │
+│  │                          │  │ • RP2040 Pico   (2x Cortex-M0+ SMP)    │  │
+│  │                          │  │ • STM32F411 WeAct, Nucleo; STM32F412   │  │
+│  │                          │  │   WeAct (single Cortex-M4F)            │  │
+│  └──────────────────────────┘  └────────────────────────────────────────┘  │
+│  ┌──────────────────────────┐  ┌────────────────────────────────────────┐  │
+│  │ micro-os-plus-iii-       │  │ ARMv7-A (AArch32) SMP Port             │  │
+│  │ aarch32/                 │  │ • Luckfox Lyra RK3506 (3x Cortex-A7)   │  │
+│  └──────────────────────────┘  └────────────────────────────────────────┘  │
+│  ┌──────────────────────────┐  ┌────────────────────────────────────────┐  │
+│  │ micro-os-plus-iii-       │  │ ARMv8-A (AArch64) SMP Port             │  │
+│  │ aarch64/                 │  │ • Raspberry Pi 4 B BCM2711 (4x A72)    │  │
+│  └──────────────────────────┘  └────────────────────────────────────────┘  │
+│  ┌──────────────────────────┐  ┌────────────────────────────────────────┐  │
+│  │ micro-os-plus-iii-       │  │ Synthetic POSIX SMP Port (Linux Host)  │  │
+│  │ posix-arch/              │  │ • host threads + ucontext + timers     │  │
+│  └──────────────────────────┘  └────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Key architectural principles:
@@ -71,47 +97,47 @@ Below is the complete, canonical directory hierarchy for a bare-metal architectu
 
 ```text
 micro-os-plus-iii-<arch>/
-├── build.zig.zon                   # Zig package manifest declaring dependency on ../micro-os-plus-iii
-├── build.zig                       # Build graph: targets, boards, module wiring, C sources, QEMU & hw.sh runners
-├── README.md                       # Architecture port overview and quick-start commands
-├── LICENSE                         # MIT License
-├── include/                        # Optional C headers for C-based test suites (e.g., CMSIS-RTOS Validator)
+├── build.zig.zon              # Package manifest: depends on ../micro-os-plus-iii
+├── build.zig                  # Build graph: targets, boards, modules, runners
+├── README.md                  # Architecture port overview & quick-start guide
+├── LICENSE                    # MIT License
+├── include/                   # Optional C headers for C-based test suites
 │   └── cmsis-plus/
-│       └── os-app-config.h         # C configuration header bridged to C test sources
-├── src/                            # Architecture-level port implementation (shared across all boards of this ISA)
-│   ├── port.zig                    # Root of `uos_port` module — implements `port_contract.zig`
-│   ├── arch.zig                    # ISA-specific inline assembly: barriers, IRQ mask/unmask, timer & fault regs
-│   ├── gic.zig                     # Interrupt controller driver (e.g., GICv2/v3, PLIC, NVIC)
-│   ├── mmu.zig                     # MMU / MPU page table builder and cache maintenance
-│   ├── semihosting.zig             # The semihosting trap (`semihosting.call`) for the kernel's `uos.semihosting`
-│   ├── faults.zig                  # Synchronous/asynchronous exception syndrome decoder & panic dump
-│   └── c_printf.c                  # Optional freestanding C11 printf/vsnprintf for C test suites
-├── drivers/                        # Optional storage drivers used by the SD tests
-│   ├── sd.zig                      # SD card block driver (EMMC2 SDHCI on the Pi 4, DW-MMC on the Lyra)
-│   ├── fatfs.zig                   # FatFs glue (disk_*, mount, files in /tests) over `sd.zig`
-│   └── fatfs/                      # FatFs R0.15a, C, unchanged
-├── boards/                         # One subdirectory per supported hardware board
-│   └── <board_name>/               # e.g., rpi4b, luckfox-lyra
-│       ├── board.zig               # Root of `uos_board` module: MMIO addresses, UART, LED, SMP core release
-│       ├── startup.S               # Reset entry `_start`, EL/mode drop, vector table, context switch asm
-│       ├── linker.ld               # Linker script defining RAM origin, .text.boot, .data/.got, .bss, stacks, heap
-│       ├── openocd.cfg             # OpenOCD JTAG/SWD interface, target definition, debug unwedge/HDE hooks
-│       └── reset.cfg               # OpenOCD hardware/watchdog reset sequence
-└── test/                           # Test scaffolding and per-test applications
-    ├── start.zig                   # Firmware root module: wires `std_options`, `panic`, `uos_options`, calls `app.main()`
-    ├── board.zig                   # Test helper bridge (`board` module): console mutex, SMP join wait, `hw_result`
-    ├── hw.sh                       # Automated OpenOCD hardware test runner (loads ELF, monitors semihosting verdict)
+│       └── os-app-config.h    # C configuration header bridged to C tests
+├── src/                       # Architecture port layer (shared across boards)
+│   ├── port.zig               # Root of `uos_port` — implements port_contract
+│   ├── arch.zig               # Inline asm: barriers, IRQ mask, timer & CPU ID
+│   ├── gic.zig                # Interrupt controller driver (GIC-400)
+│   ├── mmu.zig                # MMU page tables & cache maintenance
+│   ├── semihosting.zig        # The trap (`call`) for `uos.semihosting`
+│   ├── faults.zig             # Exception syndrome decoder & register dump
+│   └── c_printf.c             # Optional freestanding C11 printf/vsnprintf
+├── drivers/                   # Optional storage drivers for the SD tests
+│   ├── sd.zig                 # SD card (EMMC2 SDHCI / RK3506 DW-MMC)
+│   ├── fatfs.zig              # FatFs glue: disk_*, mount, files in /tests
+│   └── fatfs/                 # FatFs R0.15a, C, unchanged
+├── boards/                    # One subdirectory per supported hardware board
+│   └── <board_name>/          # e.g., rpi4b, luckfox-lyra
+│       ├── board.zig          # `uos_board` root: MMIO, UART, LED, SMP release
+│       ├── startup.S          # Reset `_start`, EL drop, vectors, switch asm
+│       ├── linker.ld          # RAM origin, .text.boot, .data/.got, .bss, stacks
+│       ├── openocd.cfg        # OpenOCD JTAG/SWD probe, target & debug hooks
+│       └── reset.cfg          # OpenOCD hardware/watchdog reset script
+└── test/                      # Test scaffolding and per-test applications
+    ├── start.zig              # Firmware root: wires options, panic, app.main()
+    ├── board.zig              # `board` helper: console lock, SMP join, hw_result
+    ├── hw.sh                  # Automated OpenOCD runner & semihosting monitor
     ├── smp-test0/
-    │   └── main.zig                # Test 0: bring-up on CPU 0, ten heartbeats one second apart
+    │   └── main.zig           # Test 0: bring-up on CPU 0, ten heartbeats
     ├── smp-test1/
-    │   └── main.zig                # Test 1: semaphore ping-pong across CPUs, a logger on a third
+    │   └── main.zig           # Test 1: semaphore ping-pong across CPUs
     ├── smp-test2/
-    │   └── main.zig                # Test 2: kernel lock coherency, one worker per CPU, one mutex
+    │   └── main.zig           # Test 2: kernel lock coherency, one mutex
     ├── smp-test3/
-    │   └── main.zig                # Test 3: message queue producer/consumer across CPUs
+    │   └── main.zig           # Test 3: message queue across CPUs
     ├── smp-test4/
-    │   └── main.zig                # Test 4: load balancing, workers without affinity
-    └── ...                         # Additional stress, matrix, SD card, memory, and validator tests
+    │   └── main.zig           # Test 4: load balancing without affinity
+    └── ...                    # Matrix, SD card, high-memory & validator suites
 ```
 
 ---
@@ -280,26 +306,43 @@ The portable kernel scheduler (`micro-os-plus-iii/src/rtos/scheduler.zig`) manag
    - Saving and claiming the stack pointers is the **port's** job. On AArch64 and AArch32 the assembly saves the frame and calls `port_switch_stacks(sp)` (cooperative switch, from `port_ctx_switch_handler`) or `port_isr_handler(sp)` (interrupt exit); the Zig function takes the kernel lock, calls `internalSwitchThreads()`, claims the incoming thread (`stack_ptr = null`), **stages** the outgoing thread's publication in the per-CPU `_smp_pub_addr` / `_smp_pub_val` slots, releases the lock and returns the incoming frame's SP.
    - The assembly performs the staged store only after `mov sp, x0`, once the stack pointer has left the outgoing thread's stack: published any earlier, another CPU could resume that thread on a stack this CPU is still using.
 
-```mermaid
-sequenceDiagram
-    participant ThreadA as Thread A (Running)
-    participant Asm as startup.S (Assembly)
-    participant Port as src/port.zig
-    participant Sched as Kernel Scheduler
+```text
+┌────────────────────────────────────────────────────────────────────────────┐
+│            SMP Context Switch & Deferred Stack Publication Flow            │
+└────────────────────────────────────────────────────────────────────────────┘
 
-    ThreadA->>Asm: reschedule() (port_reschedule_call) / Timer IRQ
-    Asm->>Asm: Push the frame onto Thread A's stack
-    Asm->>Port: port_switch_stacks(sp) / port_isr_handler(sp)
-    Port->>Port: Take the kernel lock
-    Port->>Sched: internalSwitchThreads()
-    Sched->>Sched: current_thread[cpu] = Thread B
-    Port->>Port: Claim B (B.context.port.stack_ptr = null)
-    Port->>Port: Stage publication (&A.stack_ptr, sp) in _smp_pub_addr/_val
-    Port->>Port: Release the kernel lock
-    Port-->>Asm: Return B's saved SP in x0 / r0
-    Asm->>Asm: SP = B's SP
-    Asm->>Asm: Publish A.stack_ptr = A's SP, DMB ISH
-    Asm->>Asm: Pop B's frame & ERET (AArch64) / movs pc, lr (AArch32)
+  Thread A (Running)      startup.S (Asm)        src/port.zig       Scheduler
+  ──────────────────      ───────────────        ────────────       ─────────
+          │                      │                     │                │
+          │ 1. reschedule() /    │                     │                │
+          │    timer IRQ         │                     │                │
+          │─────────────────────►│                     │                │
+          │                      │ 2. Push the frame   │                │
+          │                      │    onto A's stack   │                │
+          │                      │                     │                │
+          │                      │ 3. port_switch_stacks(sp)            │
+          │                      │    / port_isr_handler(sp)            │
+          │                      │────────────────────►│                │
+          │                      │                     │ 4. take the kernel lock
+          │                      │                     │    internalSwitchThreads()
+          │                      │                     │───────────────►│
+          │                      │                     │                │ current_thread
+          │                      │                     │◄───────────────│ [cpu] = B
+          │                      │                     │ 5. claim B:    │
+          │                      │                     │    B.stack_ptr = null
+          │                      │                     │    stage the publication:
+          │                      │                     │    _smp_pub_addr[cpu] = &A.stack_ptr
+          │                      │                     │    _smp_pub_val[cpu]  = sp
+          │                      │                     │    release the lock
+          │                      │◄────────────────────│                │
+          │                      │  B's saved SP       │                │
+          │                      │                     │                │
+          │                      │ 6. SP = B's SP      │                │
+          │                      │ 7. *(_smp_pub_addr) = A's SP, DMB ISH│
+          │                      │    (A may now be picked elsewhere)   │
+          │                      │ 8. Pop B's frame, ERET (AArch64)     │
+          │                      │    / movs pc, lr (AArch32)           │
+          ▼                      ▼                     ▼                ▼
 ```
 
 On Cortex-M the same steps run in PendSV (`src/context.zig`, `pendSvHandlerV7m` / `pendSvHandlerV6m`, which call `uos_port_switch_stacks`), and on POSIX around `swapcontext()`.
@@ -316,11 +359,11 @@ Create a new directory `boards/<board_name>/` containing 5 files:
 
 ```text
 boards/<board_name>/
-├── board.zig       # Board-specific constants, UART console, LED, SMP core bringup
-├── startup.S       # Early boot assembly, exception vectors, stack init, context switch macros
+├── board.zig       # Board constants, UART console, LED, SMP core bringup
+├── startup.S       # Early boot asm, exception vectors, stacks, switch macros
 ├── linker.ld       # Board DRAM origin, length, and section layout
 ├── openocd.cfg     # OpenOCD debug probe & SoC target configuration
-└── reset.cfg       # OpenOCD board reset script (optional if SRST/warm reset is standard)
+└── reset.cfg       # OpenOCD board reset script (optional if SRST is wired)
 ```
 
 ---
@@ -398,12 +441,69 @@ pub fn releaseSecondaries(log: *const fn ([]const u8) void) void {
 
 ---
 
+```text
+┌────────────────────────────────────────────────────────────────────────────┐
+│                   Multi-Core Reset & Early Boot Sequence                   │
+└────────────────────────────────────────────────────────────────────────────┘
+                        Hardware Reset / Entry (_start)
+                                       │
+              1. Mask IRQ/FIQ, Drop EL3/EL2 ──► EL1h (or HYP ──► SVC)
+              2. Enable FP/SIMD (CPACR_EL1) & Install VBAR_EL1
+              3. Read CPU ID (MPIDR_EL1 & 0xFF)
+                                       │
+                   ┌───────────────────┴───────────────────┐
+                   ▼ (CPU == 0)                            ▼ (CPU 1..N-1)
+      ┌─────────────────────────┐             ┌─────────────────────────┐
+      │   Core 0 Primary Boot   │             │  Secondary Cores Park   │
+      │ • SP = __stack_top      │             │ • Wait on __smp_spin[i] │
+      │ • Zero .bss section     │             │   or BootROM/PSCI wake  │
+      │ • bl mmu_init           │             └────────────┬────────────┘
+      │   (build the tables     │                          │
+      │    & enable MMU+caches) │      releaseSecondaries()│
+      │ • bl uos_core0_main     │─────────────────────────►│
+      │   ──► root.main()       │                          ▼
+      │   ──► uos.rtos.run()    │             ┌─────────────────────────┐
+      │   ──► scheduler.start() │             │  core1..3_entry         │
+      └────────────┬────────────┘             │ • SP = __stack_top_coreN│
+                   │                          │ • bl mmu_enable (shared)│
+                   │                          │ • bl boot_coreN:        │
+                   │                          │   sysInit() (GIC CPU    │
+                   │                          │   interface, 1 ms timer)│
+                   │                          │   internalPrepareCpu(N) │
+                   │                          │   scheduler.reschedule()│
+                   └─────────────┬────────────┴────────────┘
+                                 ▼
+              ┌─────────────────────────────────────────────┐
+              │  every CPU runs ready threads (or its idle) │
+              └─────────────────────────────────────────────┘
+```
+
+---
+
 ### 3.4 Step 3: Memory Map & Linker Script (`linker.ld`)
 
 `boards/<board_name>/linker.ld` defines the physical load address and memory sections.
 
-> [!IMPORTANT]
-> Always place `*(.got*)` inside `.data` **before** `.bss (NOLOAD)`. In Zig 0.17, LLD may emit a `.got` section; if `.got` is left as an orphan section after `.bss`, LLD converts the entire `.bss` section into `PROGBITS` initialized zeroes inside the ELF file, bloating the ELF from ~100 KB to >60 MB!
+> **Important:** Always place `*(.got*)` inside `.data` **before** `.bss (NOLOAD)`. In Zig 0.17, LLD may emit a `.got` section; if `.got` is left as an orphan section after `.bss`, LLD converts the entire `.bss` section into `PROGBITS` initialized zeroes inside the ELF file, bloating the ELF from ~100 KB to >60 MB!
+
+```text
+  Physical DRAM Layout (e.g., Raspberry Pi 4 B @ ORIGIN = 0x00080000)
+  ┌──────────────────┬────────────────────────┬──────────────────────────────┐
+  │ 0x0008_0000      │ .text (.text.boot, *)  │ Entry _start, vectors, code  │
+  ├──────────────────┼────────────────────────┼──────────────────────────────┤
+  │ ALIGN(8)         │ .rodata                │ Constants, vtables, strings  │
+  ├──────────────────┼────────────────────────┼──────────────────────────────┤
+  │ ALIGN(8)         │ .data + *(.got*)       │ Initialized data & GOT       │
+  ├──────────────────┼────────────────────────┼──────────────────────────────┤
+  │ __bss_start      │ .bss (NOLOAD)          │ Zeroed by Core 0 at boot     │
+  ├──────────────────┼────────────────────────┼──────────────────────────────┤
+  │ __bss_end        │ .stack (NOLOAD)        │ Core 0 (1 MiB) +             │
+  │                  │                        │ Cores 1..3 (3 x 512 KiB)     │
+  ├──────────────────┼────────────────────────┼──────────────────────────────┤
+  │ __heap_start     │ .heap (NOLOAD)         │ 64 MiB free store            │
+  │ .. __heap_end    │                        │                              │
+  └──────────────────┴────────────────────────┴──────────────────────────────┘
+```
 
 ```ld
 OUTPUT_FORMAT("elf64-littleaarch64")
@@ -529,44 +629,43 @@ Every build involves two pairs of `build.zig` / `build.zig.zon` files:
 When `addFirmware()` runs in `<arch>/build.zig`, it constructs a fresh set of Zig modules per firmware executable and links them in a directed graph:
 
 ```text
-                 +--------------------------------------------------+
-                 |  root module (test/start.zig + startup.S)        |
-                 +--------------------------------------------------+
-                                  |                        |
-                    imports "app" |                        | imports "uos"
-                                  v                        |
-        +--------------------------------------------+     |
-        |   app module (test/<test-name>/main.zig)   |     |
-        +--------------------------------------------+     |
-           |                |                |             |
-  "board"  |   "uos_suites" |  opt: "sd" /   | "uos"       |
-           |                |    "flatfs"    |             |
-           v                v                v             v
-+-----------------+  +---------------+  +---------+  +----------------------------+
-|  board module   |  |  uos_suites   |  | drivers |  |        uos module          |
-| (test/board.zig)|  | (suites.zig)  |  | (sd.zig)|  | (micro-os-plus-iii/uos.zig)|
-+-----------------+  +---------------+  +---------+  +----------------------------+
-   |            |           |                |             |               ^
-   | "uos_board"|   "uos"   |   "uos"        |   "uos"     |  "uos_port"   | "uos"
-   |            +-----------+----------------+-------------+       |       |
-   |                                                               v       |
-   |                                                 +----------------------------+
-   |                                                 |      uos_port module       |
-   |                                                 |       (src/port.zig)       |
-   |                                                 +----------------------------+
-   |                                                               |
-   |                                                   "uos_board" |
-   v                                                               v
-+---------------------------------------------------------------------------------+
-|                   uos_board module (boards/<board>/board.zig)                   |
-+---------------------------------------------------------------------------------+
+               ┌──────────────────────────────────────────────────┐
+               │      root module (test/start.zig + startup.S)    │
+               └───────────────────┬──────────────────────────┬───┘
+                    imports "app"  │                          │ imports "uos"
+                                   ▼                          │
+        ┌──────────────────────────────────────────────┐      │
+        │    app module (test/<test-name>/main.zig)    │      │
+        └──┬────────────────┬──────────────┬───────────┴─┐    │
+   "board" │   "uos_suites" │  opt: "sd" / │    "uos"    │    │
+           ▼                ▼    "fatfs"   ▼             ▼    ▼
+┌────────────────┐  ┌──────────────┐  ┌─────────┐  ┌─────────────────────────┐
+│  board module  │  │  uos_suites  │  │ drivers │  │       uos module        │
+│(test/board.zig)│  │ (suites.zig) │  │(sd.zig, │  │(micro-os-plus-iii/uos)  │
+│                │  │              │  │fatfs.zig│  │                         │
+└──┬──────────┬──┘  └───────┬──────┘  └────┬────┘  └──────────┬──────────▲───┘
+   │          │   "uos"     │    "uos"     │  "uos"           │          │
+   │          └─────────────┴──────────────┴──────────────────┼─────────►│
+   │ "uos_board"                                   "uos_port" │          │ "uos"
+   │                                                          ▼          │
+   │                                               ┌─────────────────────┴───┐
+   │                                               │     uos_port module     │
+   │                                               │      (src/port.zig)     │
+   │                                               └──────────┬──────────────┘
+   │                                                          │ "uos_board"
+   ▼                                                          ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│                  uos_board module (boards/<board>/board.zig)               │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 The exact code in `<arch>/build.zig` that constructs this graph is:
 
 ```zig
 const board_mod = b.createModule(.{
-    .root_source_file = b.path(b.fmt("boards/{s}/board.zig", .{@tagName(options.board)})),
+    .root_source_file = b.path(
+        b.fmt("boards/{s}/board.zig", .{@tagName(options.board)}),
+    ),
 });
 
 const port_mod = b.createModule(.{
@@ -590,7 +689,10 @@ const app_mod = b.createModule(.{
     .root_source_file = options.app_source_file,
     .imports = &.{
         .{ .name = "uos", .module = uos_mod },
-        .{ .name = "uos_suites", .module = uos_build.createSuitesModule(b, kernel_dep, uos_mod) },
+        .{
+            .name = "uos_suites",
+            .module = uos_build.createSuitesModule(b, kernel_dep, uos_mod),
+        },
         .{ .name = "board", .module = test_board_mod },
     },
 });
@@ -605,7 +707,9 @@ const root_mod = b.createModule(.{
         .{ .name = "app", .module = app_mod },
     },
 });
-root_mod.addAssemblyFile(b.path(b.fmt("boards/{s}/startup.S", .{@tagName(options.board)})));
+root_mod.addAssemblyFile(
+    b.path(b.fmt("boards/{s}/startup.S", .{@tagName(options.board)})),
+);
 ```
 
 ---
@@ -618,18 +722,18 @@ Every test or application configures the kernel by declaring `pub const uos_opti
 
 ```zig
 pub const uos_options: uos.Options = .{
-    .ncpu = 4,                                 // Number of SMP cores (1..32)
-    .smp = true,                               // Enable SMP scheduler & kernel lock
-    .resume_ipi = true,                        // Send immediate cross-core IPI on thread resume
-    .systick_frequency_hz = 1000,              // 1 ms tick rate
-    .main_stack_size_bytes = 65536,            // Stack size for osMain thread
-    .default_stack_size_bytes = 16384,         // Default thread stack size
-    .idle_stack_size_bytes = 16384,            // Per-CPU idle thread stack size
-    .min_stack_size_bytes = 2048,              // Minimum allowed stack size
-    .dynamic_memory_size_bytes = 8 * 1024 * 1024, // 8 MiB system heap (FirstFitTop)
-    .c_api = true,                             // Export os_* C API symbols (c_api.zig)
-    .cmsis_os = true,                          // Export osThreadCreate, etc. (cmsis_os.zig)
-    .c_runtime = true,                         // Export freestanding memcpy/strlen/printf (libc.zig)
+    .ncpu = 4,                                    // Number of SMP cores (1..32)
+    .smp = true,                                  // Enable SMP scheduler & lock
+    .resume_ipi = true,                           // Cross-core IPI on resume
+    .systick_frequency_hz = 1000,                 // 1 ms tick rate
+    .main_stack_size_bytes = 65536,               // Stack size for osMain thread
+    .default_stack_size_bytes = 16384,            // Default thread stack size
+    .idle_stack_size_bytes = 16384,               // Per-CPU idle stack size
+    .min_stack_size_bytes = 2048,                 // Minimum allowed stack size
+    .dynamic_memory_size_bytes = 8 * 1024 * 1024, // 8 MiB heap (FirstFitTop)
+    .c_api = true,                                // Export os_* C API (c_api.zig)
+    .cmsis_os = true,                             // Export CMSIS-RTOS v1 API
+    .c_runtime = true,                            // Minimal C runtime (libc.zig)
     .trace = .{
         .scheduler = false,
         .thread = false,
@@ -659,14 +763,14 @@ The options passed to `zig build` (`zig build --help` lists them for each port):
 
 Each architecture port configures `b.resolveTargetQuery(...)` and executable properties specifically for its ISA:
 
-| Architecture Port | `cpu_arch` | `os_tag` | `abi` | `cpu_model` | `.single_threaded` | Entry Symbol |
+| Port & Board | `cpu_arch` | `os_tag` | `abi` | `cpu_model` | `single_threaded` | Entry |
 |---|---|---|---|---|---|---|
-| **`aarch64`** (RPi 4 B) | `.aarch64` | `.freestanding` | `.none` | `cortex_a72` | `false` | `_start` |
-| **`aarch32`** (Luckfox Lyra) | `.arm` | `.freestanding` | `.eabihf` | `cortex_a7` | `false` | `_start` |
-| **`cortexm`** (RP2350 Pico 2) | `.thumb` | `.freestanding` | `.eabihf` | `cortex_m33` | `false` (`ncpu=2`) | MicroZig `_start` |
-| **`cortexm`** (RP2040 Pico) | `.thumb` | `.freestanding` | `.eabi` | `cortex_m0plus` | `false` (`ncpu=2`) | MicroZig `_start` |
-| **`cortexm`** (STM32F411) | `.thumb` | `.freestanding` | `.eabihf` | `cortex_m4` | `true` (`ncpu=1`) | MicroZig `_start` |
-| **`posix-arch`** (Linux Host) | `.x86_64` (native) | `.linux` (native) | `.gnu` (libc) | `baseline` / native | `false` | C `main` |
+| **`aarch64`** (RPi 4 B) | `.aarch64` | `.freestanding` | `.none` | `cortex_a72` | `false` (`ncpu=4`) | `_start` |
+| **`aarch32`** (Luckfox Lyra) | `.arm` | `.freestanding` | `.eabihf` | `cortex_a7` | `false` (`ncpu=3`) | `_start` |
+| **`cortexm`** (RP2350 Pico 2) | `.thumb` | `.freestanding` | `.eabihf` | `cortex_m33` | `false` (`ncpu=2`) | MicroZig |
+| **`cortexm`** (RP2040 Pico) | `.thumb` | `.freestanding` | `.eabi` | `cortex_m0plus` | `false` (`ncpu=2`) | MicroZig |
+| **`cortexm`** (STM32F411 / F412) | `.thumb` | `.freestanding` | `.eabihf` | `cortex_m4` | `true` (`ncpu=1`) | MicroZig |
+| **`posix-arch`** (Linux Host) | `.x86_64` (native) | `.linux` (native) | `.gnu` (libc) | `baseline` / native | `false` (`ncpu=4`, the tests' choice) | C `main` |
 
 Key compiler/linker settings in the `build.zig` files:
 - **`.single_threaded = false`** on the SMP builds (the Cortex-M port sets `single_threaded = (ncpu == 1)`): Zig/LLVM then emits real atomic read-modify-write sequences (`ldaxr`/`stlxr` on AArch64, `ldrex`/`strex` on ARMv7, `dmb ish`) instead of lowering atomics to plain loads and stores.
@@ -754,7 +858,10 @@ And for a mixed Zig + C test like `rtos-apis`, it additionally passes the C incl
   -I include \
   -I test/rtos-apis \
   -cflags -std=c11 -- src/c_printf.c \
-  -cflags -std=c11 -DOS_INTEGER_RTOS_DEFAULT_STACK_SIZE_BYTES=16384 -DOS_INTEGER_SYSTICK_FREQUENCY_HZ=1000 -- test/rtos-apis/test-c-api.c
+  -cflags -std=c11 \
+    -DOS_INTEGER_RTOS_DEFAULT_STACK_SIZE_BYTES=16384 \
+    -DOS_INTEGER_SYSTICK_FREQUENCY_HZ=1000 \
+    -- test/rtos-apis/test-c-api.c
 ```
 
 #### C. AArch32 (`micro-os-plus-iii-aarch32` — Luckfox Lyra RK3506)
@@ -811,40 +918,39 @@ cd micro-os-plus-iii-posix-arch
 Testing in µOS++ IIIe is split into two distinct layers:
 
 ```text
-+-----------------------------------------------------------------------------------+
-| 1. Core Kernel Repository (micro-os-plus-iii)                                     |
-|                                                                                   |
-|  +-------------------------------------+  +------------------------------------+  |
-|  | src/host_tests.zig                  |  | tests/suites/*.zig ('uos_suites')  |  |
-|  | - Intrusive lists (Ready/Wait/Clock)|  | - check.zig (assertion harness)    |  |
-|  | - Event/Thread internal flags       |  | - rtos_apis.zig (portable suite)   |  |
-|  | - FirstFitTop, BlockPool            |  | - io_apis.zig (POSIX I/O & FS)     |  |
-|  | - c_storage.zig (C ABI size checks) |  | - smp.zig (portable SMP checks)    |  |
-|  +-------------------------------------+  +------------------------------------+  |
-|                     |                                        |                    |
-|     zig build test  |                        imported as     |                    |
-|     (native host)   v                        'uos_suites'    |                    |
-+--------------------------------------------------------------|--------------------+
-                                                               |
-                                                               v
-+-----------------------------------------------------------------------------------+
-| 2. Architecture Repository (micro-os-plus-iii-<arch>/test/)                       |
-|                                                                                   |
-|  +-----------------------------------------------------------------------------+  |
-|  | Common Test Scaffolding: test/start.zig + test/board.zig + test/hw.sh       |  |
-|  +-----------------------------------------------------------------------------+  |
-|                     |                                        |                    |
-|                     v                                        v                    |
-|  +-------------------------------------+  +------------------------------------+  |
-|  | Portable Suite Wrappers             |  | Architecture, SMP & Hardware Tests |  |
-|  | - test/rtos-apis/                   |  | - smp-test0..4 (SMP bringup)       |  |
-|  |   (runs uos_suites + test-c-api.c)  |  | - mutex-stress, smp-pro-cons-test  |  |
-|  | - test/cmsis-os-validator/          |  | - smp-pipeline-test, smp-num-test  |  |
-|  |   (Arm CMSIS-RTOS v1 C validator)   |  | - smp-mat-test, smp-mat-sdcard-test|  |
-|  |                                     |  | - sd_test, smp-mem-test,           |  |
-|  |                                     |  |   smp-mem-inter-test               |  |
-|  +-------------------------------------+  +------------------------------------+  |
-+-----------------------------------------------------------------------------------+
+┌────────────────────────────────────────────────────────────────────────────┐
+│ 1. Core Kernel Repository (micro-os-plus-iii)                              │
+│                                                                            │
+│  ┌────────────────────────────────────┐  ┌──────────────────────────────┐  │
+│  │ src/host_tests.zig                 │  │ tests/suites/*.zig           │  │
+│  │ • Intrusive lists (Ready/Wait/Clk) │  │  (imported as 'uos_suites')  │  │
+│  │ • Event & Thread internal flags    │  │ • check.zig (check helpers)  │  │
+│  │ • FirstFitTop, BlockPool           │  │ • rtos_apis.zig (RTOS suite) │  │
+│  │ • c_storage.zig (C ABI sizes)      │  │ • io_apis.zig (uos.io)       │  │
+│  └─────────────────┬──────────────────┘  │ • smp.zig (SMP suites)       │  │
+│                    │                     └──────────────┬───────────────┘  │
+│     zig build test │ (native host)                      │ imported as      │
+│                    ▼                                    │ 'uos_suites'     │
+└─────────────────────────────────────────────────────────┼──────────────────┘
+                                                          │
+                                                          ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│ 2. Architecture Repository (micro-os-plus-iii-<arch>/test/)                │
+│                                                                            │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │ Common Test Scaffolding: test/start.zig + test/board.zig + test/hw.sh│  │
+│  └─────────────────┬────────────────────────────────────┬───────────────┘  │
+│                    ▼                                    ▼                  │
+│  ┌────────────────────────────────────┐  ┌──────────────────────────────┐  │
+│  │ Portable Suite Wrappers            │  │ Architecture & Soak Tests    │  │
+│  │ • test/rtos-apis/                  │  │ • smp-test0..4 (SMP)         │  │
+│  │   (runs uos_suites + test-c-api.c) │  │ • mutex-stress, pro-cons     │  │
+│  │ • test/cmsis-os-validator/         │  │ • smp-pipeline, smp-num-test │  │
+│  │   (Arm CMSIS-RTOS v1 C validator)  │  │ • smp-mat-test (+ sdcard)    │  │
+│  │                                    │  │ • sd_test, smp-mem-test,     │  │
+│  │                                    │  │   smp-mem-inter-test         │  │
+│  └────────────────────────────────────┘  └──────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -957,7 +1063,36 @@ You can execute any built `.img` or `.elf` directly under QEMU in clear:
 
 ### 5.6 Running Tests in Clear: Physical Hardware & OpenOCD Commands
 
-All physical hardware tests use **OpenOCD** over JTAG or SWD with **ARM Semihosting** enabled.
+All physical hardware tests use **OpenOCD** over JTAG or SWD with **ARM Semihosting** enabled:
+
+```text
+┌────────────────────────────────────────────────────────────────────────────┐
+│             Physical Hardware Execution & Semihosting Pipeline             │
+└────────────────────────────────────────────────────────────────────────────┘
+  ┌──────────────────────────┐    USB     ┌───────────────────────────────┐
+  │ Linux Host (`test/hw.sh`)│───────────►│ Debug Probe                   │
+  │ • Launches xPack OpenOCD │            │ • RPi Debug Probe (2e8a:000c) │
+  │ • Streams OpenOCD log to │◄───────────│ • WCH-Link (1a86:8011)        │
+  │   zig-out/hw-logs/*.log  │            │ • ST-Link (0483:374b)         │
+  │ • Polls for RESULT: PASS │            └───────┬───────────────────────┘
+  └──────────────────────────┘                    │ JTAG / SWD
+                                                  ▼
+                                          ┌───────────────────────────────┐
+                                          │ Physical Target Board         │
+                                          │ • RPi 4 B (4x Cortex-A72)     │
+                                          │ • Luckfox Lyra (3x Cortex-A7) │
+                                          │ • Pico 2 / Pico / STM32F4     │
+                                          │                               │
+                                          │ Semihosting Trap:             │
+                                          │   HLT #0xF000 / SVC 0x123456  │
+                                          │   / BKPT 0xAB                 │
+                                          │   ──► SYS_WRITE0 ("RESULT..") │
+                                          │   ──► SYS_EXIT (0x20026)      │
+                                          │                               │
+                                          │ UART ──► the user's terminal  │
+                                          │ (never read by the runner)    │
+                                          └───────────────────────────────┘
+```
 - **No GDB is needed**: OpenOCD loads the `.elf` directly into RAM/Flash and resumes the target.
 - **No serial port capture is needed for verdicts**: a test prints its `RESULT: PASS` (or `FAIL`) line and ends through `board.hw_result.ok()` / `fail()`, or by returning from its main thread (`exit(code)`); both reach `uos.rtos.terminate(code)`: the `_Exit()` trace, the stack report, the port's `terminate()` (which prints a `RESULT` line only if the test printed none) and the semihosting `SYS_EXIT`. The verdict line reaches OpenOCD's log through the semihosting console. On the Raspberry Pi 4 B only the verdict lines (`RESULT`, `FAIL`, `FATAL`) go to semihosting: OpenOCD 0.12 does not resume cores 1–3 after a semihosting call there; the whole console is on the UART.
 
