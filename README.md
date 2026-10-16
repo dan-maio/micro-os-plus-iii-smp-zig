@@ -89,6 +89,7 @@ port's; deviations are stated in each `main.zig`.
 | `smp-mat-sdcard-test` | `smp-mat-sdcard-test` (N = 200, matrices on SD) | PASS, speedup 4.62× |
 | `smp-test-int5` | `smp_test_int5`, `SMP_TEST_INT5_SELFTRIG` (as `tests.cmake`) | A7 side verified (GIC IDs 171/172, doorbells on cores 1 and 2); the run lost the probe at doorbell #31 |
 | `smp-test-int5-m0` | `smp_test_int5` with the Cortex-M0 firmware | builds; not run yet |
+| `semihosting-test` | no C++ counterpart: every operation of the kernel's `uos.semihosting` | PASS |
 
 The SD tests follow the C++ `HW_BUILD` branch (FatFs on the card's FAT32
 volume), not the QEMU one (flatfs, which formats the card).

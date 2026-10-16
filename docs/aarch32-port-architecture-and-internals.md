@@ -174,8 +174,9 @@ The A7 side discovers each mailbox channel's GIC ID at run time (a controlled wr
 | `smp-mat-sdcard-test` | parallel block solver, N = 200, matrices on SD | PASS, 4.62× |
 | `smp-test-int5` | mailbox doorbells to CPUs 1/2, from core 0 | A7 side verified; the probe dropped at doorbell #31 |
 | `smp-test-int5-m0` | the same from the Cortex-M0 | built, not run yet |
+| `semihosting-test` | every `uos.semihosting` operation against OpenOCD (console, host files, host, time) | PASS |
 
-They are faithful ports of the C++ `test/luckfox-lyra/` tests; the portable ones share their source with the POSIX port's, with the Lyra C++ differences applied (3 CPUs, affinities wrapped with `% ncpu`, one packet in flight at the stop in `smp-pro-cons-test`, N = 120 / 200 and newlib's `rand()` in the solvers). `smp-num-test` formats its floating-point line with `std.fmt` (the kernel's `printf` has no floating point; the C++ is newlib's), so a value may differ in the last digit. `smp-test0` and `smp-test1` passed before the clobber fix of §4.2, with a register allocation that happened not to keep a value in r2 across a switch.
+Apart from `semihosting-test` (no C++ counterpart), they are faithful ports of the C++ `test/luckfox-lyra/` tests; the portable ones share their source with the POSIX port's, with the Lyra C++ differences applied (3 CPUs, affinities wrapped with `% ncpu`, one packet in flight at the stop in `smp-pro-cons-test`, N = 120 / 200 and newlib's `rand()` in the solvers). `smp-num-test` formats its floating-point line with `std.fmt` (the kernel's `printf` has no floating point; the C++ is newlib's), so a value may differ in the last digit. `smp-test0` and `smp-test1` passed before the clobber fix of §4.2, with a register allocation that happened not to keep a value in r2 across a switch.
 
 ---
 
