@@ -8,6 +8,7 @@
 //! and becomes a no-op when nothing is attached. SYS_EXIT takes the reason
 //! in r1, as the C++ `report_exception()`.
 
+const std = @import("std");
 const uos = @import("uos");
 const arch = @import("arch.zig");
 
@@ -28,8 +29,13 @@ pub fn attached() bool {
     return arch.debuggerAttached();
 }
 
+/// Whether a "RESULT:" line went to the debugger (the trace or a test's
+/// own verdict): `terminate()` prints one only when none did.
+pub var verdict_written: bool = false;
+
 /// Bytes to the debugger console (SYS_WRITE0, in NUL-terminated chunks).
 pub fn write(bytes: []const u8) void {
+    if (std.mem.indexOf(u8, bytes, "RESULT:") != null) verdict_written = true;
     uos.semihosting.writeConsole(bytes);
 }
 

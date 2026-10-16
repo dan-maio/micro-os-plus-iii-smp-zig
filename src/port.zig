@@ -546,15 +546,11 @@ pub const clock_highres = struct {
 // Contract: trace and termination.
 
 pub const trace = struct {
-    /// Whether a "RESULT:" line went out (see `terminate()`).
-    var verdict_printed: bool = false;
-
     /// Every trace byte goes to the console -- the application's own writer
     /// when its root declares `uos_trace_write` (a test with its own UART
     /// driver), otherwise the board's UART -- and to semihosting, when a
     /// debugger is attached.
     pub fn write(bytes: []const u8) void {
-        if (std.mem.indexOf(u8, bytes, "RESULT:") != null) verdict_printed = true;
         if (@hasDecl(root, "uos_trace_write")) {
             root.uos_trace_write(bytes);
         } else if (@hasDecl(board, "uartWrite")) {
@@ -578,7 +574,7 @@ pub const trace = struct {
 /// terminal lost the end of the run (the summary, the stacks, the RESULT).
 pub fn terminate(code: u8) noreturn {
     arch.disableIrq();
-    if (!trace.verdict_printed) trace.write(if (code == 0) "RESULT: PASS\n" else "RESULT: FAIL\n");
+    if (!semihosting.verdict_written) trace.write(if (code == 0) "RESULT: PASS\n" else "RESULT: FAIL\n");
     if (@hasDecl(board, "uartFlush")) {
         board.uartFlush();
         var n: u32 = board.cpuFrequencyHz(); // >= 1 s: >= 1 cycle per turn
