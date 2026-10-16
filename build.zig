@@ -91,6 +91,17 @@ const cmsis_rv_sources = [_][]const u8{
 /// Tests ported one to one from a board's C++ test folder
 /// (`test/<board>/<test>/main.zig`); they replace the generic one.
 const board_tests = [_]struct { board: BoardId, name: []const u8 }{
+    .{ .board = .pico, .name = "smp-test0" },
+    .{ .board = .pico, .name = "smp-test1" },
+    .{ .board = .pico, .name = "smp-test2" },
+    .{ .board = .pico, .name = "smp-test3" },
+    .{ .board = .pico, .name = "smp-test4" },
+    .{ .board = .pico, .name = "smp-test5" },
+    .{ .board = .pico, .name = "smp-mat-test" },
+    .{ .board = .pico, .name = "sc-test-ko" },
+    .{ .board = .pico, .name = "smp-test-ko" },
+    .{ .board = .pico, .name = "exc-test" },
+    .{ .board = .pico, .name = "smp-test-usb-cdc-acm" },
     .{ .board = .pico2, .name = "smp-test0" },
     .{ .board = .pico2, .name = "smp-test1" },
     .{ .board = .pico2, .name = "smp-test2" },
@@ -119,11 +130,11 @@ const tests = [_]Test{
     .{ .name = "smp-test2", .smp_only = true },
     .{ .name = "smp-test3", .smp_only = true },
     .{ .name = "smp-test4", .smp_only = true },
-    .{ .name = "smp-test5", .only = .pico2 },
+    .{ .name = "smp-test5", .smp_only = true },
     .{ .name = "smp-mat-test" },
     .{ .name = "sc-test-ko" },
-    .{ .name = "smp-test-ko", .only = .pico2 },
-    .{ .name = "exc-test", .only = .pico2 },
+    .{ .name = "smp-test-ko", .smp_only = true },
+    .{ .name = "exc-test", .smp_only = true },
     .{ .name = "fp-switch" },
     .{ .name = "mutex-stress" },
     .{
@@ -142,7 +153,7 @@ const tests = [_]Test{
     },
     .{ .name = "io-test" },
     .{ .name = "spi-pipeline", .only = .weactf411 },
-    .{ .name = "smp-test-usb-cdc-acm", .only = .pico2 },
+    .{ .name = "smp-test-usb-cdc-acm", .smp_only = true },
 };
 
 pub const FirmwareOptions = struct {

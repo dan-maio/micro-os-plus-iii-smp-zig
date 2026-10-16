@@ -50,6 +50,8 @@ fn validatorIrq() callconv(.c) void {
 /// IRQ 0, the first external interrupt.
 pub const uos_interrupts = if (@hasField(microzig.chip.VectorTable, "WWDG"))
     .{ .WWDG = microzig.interrupt.Handler{ .c = validatorIrq } }
+else if (@hasField(microzig.chip.VectorTable, "TIMER_IRQ_0"))
+    .{ .TIMER_IRQ_0 = microzig.interrupt.Handler{ .c = validatorIrq } }
 else
     .{ .TIMER0_IRQ_0 = microzig.interrupt.Handler{ .c = validatorIrq } };
 

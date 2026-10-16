@@ -71,8 +71,8 @@ case "$BOARD" in
          -c "targets rp2350.cm0" -c "arm semihosting enable" -c "resume")
     ;;
   pico)
-    CFG=(-f interface/cmsis-dap.cfg "${PROBE_ARGS[@]}" -c "adapter speed ${KHZ:-5000}"
-         -c "set USE_CORE { 0 1 }" -c "set USE_SMP 0" -f target/rp2040.cfg)
+    CFG=(-f interface/cmsis-dap.cfg "${PROBE_ARGS[@]}" -c "adapter speed ${KHZ:-15000}"
+         -c "set FLASHSIZE 0x200000" -c "set USE_CORE BOTH" -f target/rp2040.cfg)
     RUN=(-c "init" -c "reset init" -c "program \"$ELF\" verify" -c "reset init"
          -c "targets rp2040.core1" -c "arm semihosting enable" -c "resume"
          -c "targets rp2040.core0" -c "arm semihosting enable" -c "resume")

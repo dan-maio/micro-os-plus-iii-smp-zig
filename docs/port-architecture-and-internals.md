@@ -7,11 +7,12 @@
 ### 1.1 Origin & Purpose
 **µOS++ IIIe** is a real-time micro-kernel originally conceived and designed in C++ by Liviu Ionescu. It is architected for embedded systems requiring high predictability, deterministic real-time scheduling, modular synchronization primitives, and strict separation between the portable kernel logic and architecture-specific hardware ports.
 
-This project delivers a complete, idiomatic **Zig (0.17.0)** and **MicroZig** port of µOS++ IIIe, targeting dual modern 32-bit ARM Cortex-M platforms:
+This project delivers a complete, idiomatic **Zig (0.17.0)** and **MicroZig** port of µOS++ IIIe, targeting modern 32-bit ARM Cortex-M platforms:
 1. **Raspberry Pi Pico 2 (RP2350)**: Dual ARM Cortex-M33 cores operating in true Symmetric Multi-Processing (SMP) mode with hardware spinlocks and single-precision Floating Point Units (FPUs).
-2. **WeAct Studio Black Pill (STM32F411CE)**: Single ARM Cortex-M4F core with hardware FPU, demonstrating single-core real-time preemption and hardware context switching.
+2. **Raspberry Pi Pico (RP2040)**: Dual ARM Cortex-M0+ (ARMv6-M) cores operating in true SMP mode at 125 MHz with SIO hardware spinlock 0 and per-core SIO FIFO interrupts (`SIO_IRQ_PROC0`/`SIO_IRQ_PROC1`).
+3. **WeAct Studio Black Pill (STM32F411CE)**: Single ARM Cortex-M4F core with hardware FPU, demonstrating single-core real-time preemption and hardware context switching.
 
-Across both microcontrollers, all 14 hardware test suites have been verified on physical silicon with a **100% pass rate**.
+Across all microcontrollers, all hardware test suites have been verified on physical silicon with a **100% pass rate**.
 
 ---
 
@@ -1474,7 +1475,29 @@ Every test is a faithful port of a C++ test (same banners, lines, LED behaviour 
 | `cmsis-os-validator` | **PASS** | Arm CMSIS-RTOS validator, 60/60. |
 | `io-test` | **PASS** | `std.Io` suite, 25/25. |
 
-### 10.2 WeAct Black Pill (STM32F411CE Cortex-M4F Single-Core)
+### 10.2 Raspberry Pi Pico (RP2040 Dual Cortex-M0+ SMP)
+*Probed with the Raspberry Pi Debug Probe (`2e8a:000c`) over SWD (`set FLASHSIZE 0x200000; set USE_CORE BOTH`, `rp2040.core1` resumed before `rp2040.core0` with `arm semihosting enable` kept active).*
+
+| Test | Status | Notes |
+|---|---|---|
+| `smp-test0` | **PASS** | Dual-core bring-up at 125 MHz, Core 1 LED blink (`0xC0FFEE`). |
+| `smp-test1` | **PASS** | Single-core scheduler & 1 ms SysTick. |
+| `smp-test2` | **PASS** | CPU affinity (`wrk0 on core 0 20/20, wrk1 on core 1 20/20`). |
+| `smp-test3` | **PASS** | Cross-core IPI ping-pong (`SIO_IRQ_PROC0`/`1`, 4000 explicit IPIs, 0 slow). |
+| `smp-test4` | **PASS** | All 7 SMP kernel primitives (`S1..S7 PASS`). |
+| `smp-test5` | **PASS** | Cross-core IRQ-driven UART0 TX (`IRQ 20` on Core 1, 1000 lines, 48848 B, 0 dropped). |
+| `smp-mat-test` | **PASS** | 80×80 tiled block solver (B=20), speedup 1.183×, max diff 0.000000. |
+| `sc-test-ko` | **PASS** | Single core, 10/10. |
+| `smp-test-ko` | **PASS** | Dual-core SMP, 10/10. |
+| `exc-test` | **PASS** | ARMv6-M exception probe (`systick=6942 pendsv=1`). |
+| `smp-test-usb-cdc-acm` | **PASS** | USB CDC-ACM (`Cafe:4013`) mounted and echoed across 2 cores. |
+| `fp-switch` | **PASS** | Soft-float / no-FPU check. |
+| `mutex-stress` | **PASS** | 10 threads, 30 s report: `sum=2399, avg=240, sigma=6`. |
+| `rtos-apis` | **PASS** | C++ API, C API (`test-c-api.c`), ISO and POSIX I/O parts. |
+| `cmsis-os-validator` | **PASS** | Arm CMSIS-RTOS validator (`TIMER_IRQ_0`), 60/60. |
+| `io-test` | **PASS** | `std.Io` suite, 25/25. |
+
+### 10.3 WeAct Black Pill (STM32F411CE Cortex-M4F Single-Core)
 *Probed with a WCH-Link in ARM mode (`1a86:8011`). It may drop the connection under heavy semihosting traffic; reset and run again. The probe also bridges the UART, and drops what it has not forwarded when OpenOCD disconnects: `terminate()` therefore drains the UART and waits about 1 s before the semihosting `SYS_EXIT`.*
 
 | Test | Status | Notes |
@@ -1489,7 +1512,7 @@ Every test is a faithful port of a C++ test (same banners, lines, LED behaviour 
 
 ---
 
-### 10.3 POSIX Host (GNU/Linux x86_64, host threads as CPUs)
+### 10.4 POSIX Host (GNU/Linux x86_64, host threads as CPUs)
 *The `micro-os-plus-iii-posix-arch` port; `test/run-all.sh` runs all of them. Outputs compared with the C++ native builds of the `smp` branch.*
 
 | Test | Status | Notes |

@@ -3,16 +3,17 @@
 The Cortex-M architecture port of the Zig µOS++ IIIe kernel
 (`../micro-os-plus-iii`), on [MicroZig](https://github.com/ZigEmbeddedGroup/microzig)
 0.17: context switch (PendSV), SysTick, BASEPRI or PRIMASK critical
-sections, FPU lazy stacking, the fault reporter, and SMP on the RP2350 (two
-Cortex-M33, SIO spinlocks and FIFO IPIs).
+sections, FPU lazy stacking, the fault reporter, and SMP on the RP2040 (two
+Cortex-M0+) and RP2350 (two Cortex-M33, SIO spinlocks and FIFO IPIs).
 
 ## Boards
 
 | `-Dboard=` | Board | CPU | Probe |
 | --- | --- | --- | --- |
 | `pico2` | Raspberry Pi Pico 2 (RP2350) | 2× Cortex-M33F, SMP | Raspberry Pi Debug Probe (`2e8a:000c`) |
+| `pico` | Raspberry Pi Pico (RP2040) | 2× Cortex-M0+, SMP | Raspberry Pi Debug Probe (`2e8a:000c`) |
 | `weactf411` | WeAct Black Pill (STM32F411CE) | Cortex-M4F | WCH-Link in ARM mode (`1a86:8011`) |
-| `nucleof411`, `weactf412`, `pico` | NUCLEO-F411RE, WeAct F412RE, Pico (RP2040) | | builds only, not tested on hardware |
+| `nucleof411`, `weactf412` | NUCLEO-F411RE, WeAct F412RE | Cortex-M4F | builds only, not tested on hardware |
 
 ## Requirements
 
@@ -29,6 +30,7 @@ Cortex-M33, SIO spinlocks and FIFO IPIs).
 
 ```sh
 zig build -Dboard=pico2                              # every test of the board
+zig build -Dboard=pico                               # every test of the Pico (RP2040)
 zig build -Dboard=weactf411 -Dtest=rtos-apis         # one test
 zig build run -Dboard=pico2 -Dtest=smp-test2         # program it and run it
 bash test/hw.sh pico2 zig-out/firmware/pico2/smp-test2.elf 120
@@ -39,8 +41,8 @@ programs the image with OpenOCD (no GDB) and follows the semihosting
 output until `RESULT: PASS` or `RESULT: FAIL`; the log is
 `zig-out/hw-logs/<board>/<test>.log`. The UARTs stay free for a terminal.
 
-The RP2350 keeps peripheral state (USB, SIO) across a debugger reset:
-power cycle or reset the Pico 2 between tests, or a test may fail at start
+The RP2040/RP2350 keep peripheral state (USB, SIO) across a debugger reset:
+power cycle or reset the Pico / Pico 2 between tests, or a test may fail at start
 (seen with `smp-test-usb-cdc-acm`). The WCH-Link can drop the connection
 under heavy semihosting traffic ("CMSIS-DAP command mismatch", the log cut
 short); reset and run again. It also bridges the UART, and drops what it has
@@ -55,25 +57,25 @@ LED behaviour, same verdict. Deviations are stated in the test's
 `main.zig`. Board specific tests are in `test/<board>/<test>/`, the others
 in `test/<test>/`.
 
-| Test | From (C++) | Pico 2 | WeAct F411 |
-| --- | --- | --- | --- |
-| `smp-test0` | `test/pico2/smp-test0` | PASS | PASS |
-| `smp-test1` | `test/pico2/smp-test1` | PASS | builds |
-| `smp-test2` | `test/pico2/smp-test2` (affinity) | PASS | SMP only |
-| `smp-test3` | `test/pico2/smp-test3` (resume IPI, kernel and direct) | PASS | SMP only |
-| `smp-test4` | `test/pico2/smp-test4` | PASS | SMP only |
-| `smp-test5` | `test/pico2/smp-test5` | PASS | Pico 2 only |
-| `smp-mat-test` | `test/pico2/smp-mat-test` | PASS, speedup 2.016× | builds |
-| `sc-test-ko` | `test/pico2/sc-test-ko` (single core) | PASS, 10/10 | builds |
-| `smp-test-ko` | `test/pico2/smp-test-ko` | PASS, 10/10 | Pico 2 only |
-| `exc-test` | `test/pico2/exc-test` | PASS | Pico 2 only |
-| `smp-test-usb-cdc-acm` | `test/pico2/smp-test-usb-cdc-acm` | PASS (after a reset) | Pico 2 only |
-| `fp-switch` | harness suite `fp-switch` | PASS, 3681 rounds, 0 bad | PASS, 2474 rounds, 0 bad |
-| `mutex-stress` | harness suite `mutex-stress` | PASS | PASS |
-| `rtos-apis` | harness suite `rtos-apis` (C++, C, ISO, POSIX I/O parts) | PASS | PASS |
-| `cmsis-os-validator` | harness suite `cmsis-os-validator` (Arm CMSIS-RTOS validator) | PASS, 60/60 | PASS, 60/60 |
-| `io-test` | the `std.Io` suite (no C++ counterpart) | PASS, 25/25 | builds |
-| `spi-pipeline` | `test/weactf411/spi-pipeline` | WeAct only | PASS, 8/8 |
+| Test | From (C++) | Pico 2 | Pico | WeAct F411 |
+| --- | --- | --- | --- | --- |
+| `smp-test0` | `test/pico{,2}/smp-test0` | PASS | PASS | PASS |
+| `smp-test1` | `test/pico{,2}/smp-test1` | PASS | PASS | builds |
+| `smp-test2` | `test/pico{,2}/smp-test2` (affinity) | PASS | PASS | SMP only |
+| `smp-test3` | `test/pico{,2}/smp-test3` (resume IPI, kernel and direct) | PASS | PASS | SMP only |
+| `smp-test4` | `test/pico{,2}/smp-test4` | PASS | PASS | SMP only |
+| `smp-test5` | `test/pico{,2}/smp-test5` | PASS | PASS | Pico / Pico 2 only |
+| `smp-mat-test` | `test/pico{,2}/smp-mat-test` | PASS, speedup 2.016× | PASS, speedup 1.183× | builds |
+| `sc-test-ko` | `test/pico{,2}/sc-test-ko` (single core) | PASS, 10/10 | PASS, 10/10 | builds |
+| `smp-test-ko` | `test/pico{,2}/smp-test-ko` | PASS, 10/10 | PASS, 10/10 | Pico / Pico 2 only |
+| `exc-test` | `test/pico{,2}/exc-test` | PASS | PASS | Pico / Pico 2 only |
+| `smp-test-usb-cdc-acm` | `test/pico{,2}/smp-test-usb-cdc-acm` | PASS (after a reset) | PASS | Pico / Pico 2 only |
+| `fp-switch` | harness suite `fp-switch` | PASS, 3681 rounds, 0 bad | PASS (no FPU) | PASS, 2474 rounds, 0 bad |
+| `mutex-stress` | harness suite `mutex-stress` | PASS | PASS | PASS |
+| `rtos-apis` | harness suite `rtos-apis` (C++, C, ISO, POSIX I/O parts) | PASS | PASS | PASS |
+| `cmsis-os-validator` | harness suite `cmsis-os-validator` (Arm CMSIS-RTOS validator) | PASS, 60/60 | PASS, 60/60 | PASS, 60/60 |
+| `io-test` | the `std.Io` suite (no C++ counterpart) | PASS, 25/25 | PASS, 25/25 | builds |
+| `spi-pipeline` | `test/weactf411/spi-pipeline` | WeAct only | WeAct only | PASS, 8/8 |
 
 "builds" means the test compiles for the board but was not run on it in
 the last round.
@@ -101,8 +103,10 @@ handler and default options.
 
 `docs/port-architecture-and-internals.md` describes the architecture, the
 SMP design, how Zig expresses the C++ object model, the context switch and
-the tests; `docs/posix-port-architecture-and-internals.md` the sibling POSIX
-port (`../micro-os-plus-iii-posix-arch`);
+the tests; `docs/architecture-board-build-and-test-guide.md` is the
+reference manual for adding architectures/boards, building, and running
+QEMU/OpenOCD hardware tests; `docs/posix-port-architecture-and-internals.md`
+the sibling POSIX port (`../micro-os-plus-iii-posix-arch`);
 `docs/weact-studio-blackpill-architecture-and-internals.md` the F411 board;
 `docs/aarch32-aarch64-smp-amp-porting-guide.md` how to port further.
 
