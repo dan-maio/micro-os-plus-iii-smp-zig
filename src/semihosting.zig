@@ -1,6 +1,7 @@
-//! ARM semihosting (the C++ include/semihosting.hpp, hardware build): the
-//! Angel trap `svc 0x123456` in ARM state, taken by OpenOCD; SYS_EXIT gets
-//! a pointer to the {reason, status} block.
+//! ARM semihosting on AArch32: the trap of the kernel's `uos.semihosting`
+//! (every operation lives there), as the C++ include/semihosting.hpp
+//! hardware build: the Angel trap `svc 0x123456` in ARM state, taken by
+//! OpenOCD; SYS_EXIT gets a pointer to the {reason, status} block.
 //!
 //! The console mirror is line buffered, as the C++ `uart1` one: every call
 //! is a debug halt and a probe round trip, so one SYS_WRITE0 per line, not
@@ -11,18 +12,15 @@
 const uos = @import("uos");
 const arch = @import("arch.zig");
 
-const sys_write0: u32 = 0x04;
-const sys_exit: u32 = 0x18;
-const adp_stopped_application_exit: u32 = 0x20026;
 
 /// The trap. Threads run in SVC mode, so the SVC overwrites LR_svc and
 /// SPSR_svc: LR is a clobber, and the IRQs are masked around it (an IRQ in
 /// between would not matter for LR, but a switch could move the thread).
-inline fn call(op: u32, arg: usize) u32 {
+pub fn call(op: usize, arg: usize) usize {
     const cpsr = arch.getCpsr();
     arch.disableIrq();
     const r = asm volatile ("svc 0x123456"
-        : [ret] "={r0}" (-> u32),
+        : [ret] "={r0}" (-> usize),
         : [op] "{r0}" (op),
           [arg] "{r1}" (arg),
         : .{ .r2 = true, .r3 = true, .r12 = true, .lr = true, .memory = true, .cpsr = true });
@@ -30,16 +28,17 @@ inline fn call(op: u32, arg: usize) u32 {
     return r;
 }
 
+/// SYS_EXIT gets a {reason, status} block.
+pub const exit_by_block = true;
+
 /// SYS_WRITE0: a NUL-terminated string.
 pub fn write0(s: [*:0]const u8) void {
-    _ = call(sys_write0, @intFromPtr(s));
+    uos.semihosting.write0(s);
 }
 
-/// SYS_EXIT with ApplicationExit and the status (0 = success).
+/// SYS_EXIT (the C++ `os_terminate()`).
 pub fn exit(code: u8) noreturn {
-    var block: [2]u32 = .{ adp_stopped_application_exit, code };
-    _ = call(sys_exit, @intFromPtr(&block));
-    while (true) arch.wfi();
+    uos.semihosting.exit(code);
 }
 
 const buf_size = 256;

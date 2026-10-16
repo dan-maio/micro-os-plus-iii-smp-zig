@@ -123,11 +123,14 @@ pub fn cpuSlot() u32 {
 
 /// The verdict: a semihosting SYS_EXIT.
 pub const hw_result = struct {
+    /// End the run reporting success (`std::_Exit(0)`: the statistics, then
+    /// the port's `os_terminate()`).
     pub fn ok() noreturn {
-        uos.port.terminate(0);
+        uos.rtos.terminate(0);
     }
+    /// End the run reporting failure (`std::_Exit(1)`).
     pub fn fail() noreturn {
-        uos.port.terminate(1);
+        uos.rtos.terminate(1);
     }
 };
 

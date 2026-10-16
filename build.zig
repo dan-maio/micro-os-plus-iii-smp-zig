@@ -58,6 +58,7 @@ const tests = [_]Test{
     .{ .name = "smp-mat-sdcard-test", .devices = true },
     .{ .name = "smp-test-int5", .int5 = .selftrig },
     .{ .name = "smp-test-int5-m0", .dir = "smp-test-int5", .int5 = .m0 },
+    .{ .name = "semihosting-test" },
 };
 
 pub fn build(b: *std.Build) void {
