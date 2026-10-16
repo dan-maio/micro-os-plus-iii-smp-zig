@@ -13,6 +13,7 @@ This project delivers a complete, idiomatic **Zig (0.17.0)** and **MicroZig** po
 3. **WeAct Studio Black Pill (STM32F411CE)**: Single ARM Cortex-M4F core with hardware FPU, demonstrating single-core real-time preemption and hardware context switching.
 4. **ST Nucleo-F411RE (STM32F411RE)**: the same Cortex-M4F on its reset HSI (16 MHz), with the integrated ST-Link and an interrupt-driven USART2 console.
 5. **WeAct STM32F412RE**: a Cortex-M4F at 100 MHz, with the C++ board's interrupt- and DMA-driven USART1 driver.
+6. **WeAct RP2350B core board (16 MB flash + 8 MB PSRAM)**: the Pico 2's dual Cortex-M33 in the QFN-80 package, with its 8 MB QSPI PSRAM and a from-scratch clock table up to 250 MHz.
 
 Across all microcontrollers, all hardware test suites have been verified on physical silicon with a **100% pass rate**.
 
@@ -1494,7 +1495,20 @@ All pass (`test/run-all.sh weactf411`, 2026-10-16, 10/10; `mos-test1` run on its
 | `mutex-stress` | **PASS** | 35 s report: sigma 7, delta within −6 %…+3 %. |
 | `cmsis-os-validator` | **PASS** | 60/60. |
 
-### 10.6 POSIX Host (GNU/Linux x86_64, host threads as CPUs)
+### 10.6 WeAct RP2350B Core Board (16 MB flash + 8 MB PSRAM, Dual Cortex-M33 SMP)
+*Its CMSIS-DAP (`c251:f001`) over SWD at 500 kHz (C++ 1000: the link was lost twice there). MicroZig's RP2350B 16 MB target (the Adafruit Metro RP2350's); console on UART0 GPIO12/13. The board file keeps the clock frequency at run time, and the console's baud divisors follow it (the clock tests reprogram the clocks before the scheduler starts).*
+
+- **PSRAM** (`src/boards/rp2350_psram.zig`, the C++ `psram.cpp`): QMI direct-mode reset, quad enable and the M1 window at 0x11000000, run from SRAM (`.ram_text`) with every helper inlined, since flash XIP is unavailable meanwhile. The tests initialise it at their start (C++: boot.S), so only the solvers' arrays and workspaces live in it (C++: all of `.data`/`.bss`).
+- **Clocks** (`src/boards/rp2350_clocks.zig`, the C++ `clocks.cpp` from-scratch path): a 12-row table (48..200 MHz; 13 with 250 MHz at 1.25 V), the row chosen through the watchdog scratch registers, the core voltage raised and the flash/PSRAM QMI dividers slowed before the clock; a reboot into a row through the watchdog.
+
+| Test | Status | Notes |
+|---|---|---|
+| `smp-test0` … `smp-test5`, `smp-test-ko`, `sc-test-ko`, `exc-test`, `fp-switch` | **PASS** | As on the Pico 2 (`smp-test3` and `exc-test` follow the current Pico 2 copies; the C++ PSRAM copies are older versions). |
+| `smp-mat-test` | **PASS** | N = 300, B = 50, the matrices in the PSRAM; speedup 9.56× (the block solver stays in the XIP cache). |
+| `smp-test-nested` | **PASS** | UART0 (priority 12) preempted by TIMER0 alarms 2 (8) and 3 (10) on both cores; lock-free trace (SIO spinlock 4); handlers in RAM. |
+| `smp-test-nested-clock`, `_200`, `_250` | **PASS** | Interactive: the potentiometer (GPIO40 / ADC0) picks the clock, 'y' on the console confirms, the board reboots into it; then the nesting test and a block solver in the PSRAM (N = 1000 / 500 / 800), up to 250 MHz. Judged on the console: the clock reboot can knock this probe off USB. |
+
+### 10.7 POSIX Host (GNU/Linux x86_64, host threads as CPUs)
 *The `micro-os-plus-iii-posix-arch` port; `test/run-all.sh` runs all of them. Outputs compared with the C++ native builds of the `smp` branch.*
 
 | Test | Status | Notes |
