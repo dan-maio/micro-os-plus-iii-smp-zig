@@ -7,11 +7,12 @@
 ### 1.1 Origin & Purpose
 **µOS++ IIIe** is a real-time micro-kernel originally conceived and designed in C++ by Liviu Ionescu. It is architected for embedded systems requiring high predictability, deterministic real-time scheduling, modular synchronization primitives, and strict separation between the portable kernel logic and architecture-specific hardware ports.
 
-This project delivers a complete, idiomatic **Zig (0.17.0)** and **MicroZig** port of µOS++ IIIe, targeting dual modern 32-bit ARM Cortex-M platforms:
+This project delivers a complete, idiomatic **Zig (0.17.0)** and **MicroZig** port of µOS++ IIIe, targeting modern 32-bit ARM Cortex-M platforms:
 1. **Raspberry Pi Pico 2 (RP2350)**: Dual ARM Cortex-M33 cores operating in true Symmetric Multi-Processing (SMP) mode with hardware spinlocks and single-precision Floating Point Units (FPUs).
-2. **WeAct Studio Black Pill (STM32F411CE)**: Single ARM Cortex-M4F core with hardware FPU, demonstrating single-core real-time preemption and hardware context switching.
+2. **Raspberry Pi Pico (RP2040)**: Dual ARM Cortex-M0+ (ARMv6-M) cores operating in true SMP mode at 125 MHz with SIO hardware spinlock 0 and per-core SIO FIFO interrupts (`SIO_IRQ_PROC0`/`SIO_IRQ_PROC1`).
+3. **WeAct Studio Black Pill (STM32F411CE)**: Single ARM Cortex-M4F core with hardware FPU, demonstrating single-core real-time preemption and hardware context switching.
 
-Across both microcontrollers, all 14 hardware test suites have been verified on physical silicon with a **100% pass rate**.
+Across all microcontrollers, all hardware test suites have been verified on physical silicon with a **100% pass rate**.
 
 ---
 
@@ -35,31 +36,10 @@ In bare-metal embedded programming, unconstrained heap allocation (`malloc`) cau
 In this port, **every function that requires memory demands an explicit allocator parameter** or uses compile-time static sizing. The kernel provides two memory management layers:
 1. **`uos.memory.BlockPool`**: Fixed-size block allocator operating in $O(1)$ constant time with zero fragmentation risk.
 2. **`uos.memory.FirstFitTop`**: Bounded dynamic heap allocator with coalescing, watermarking, and statistics tracking.
-3. **`ThreadInclusive(stack_size)`**: A generic type that embeds the thread's stack storage array directly into the thread control block:
+3. **`ThreadInclusive(stack_size)`**: A generic type that embeds the thread's stack storage array directly into the thread control block (`src/rtos/thread.zig`, shown in 3.2):
 ```zig
-pub fn ThreadInclusive(comptime stack_size_bytes: usize) type {
-    return struct {
-        const Self = @This();
-        thread: Thread = .{},
-        stack_storage: [stack_size_bytes]u8 align(8) = undefined,
-
-        pub fn init(
-            self: *Self,
-            name: []const u8,
-            func: Thread.Function,
-            arg: ?*anyopaque,
-            attr: Thread.Attributes,
-        ) !void {
-            var a = attr;
-            a.stack = &self.stack_storage;
-            try self.thread.init(name, func, arg, a);
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.thread.deinit();
-        }
-    };
-}
+var worker: rtos.ThreadInclusive(4096) = undefined;
+try worker.init("worker", workerMain, null, .{});   // the stack is worker.stack
 ```
 This guarantees that thread stacks are statically allocated alongside thread metadata without a single call to dynamic memory routines.
 
@@ -549,13 +529,10 @@ Here is the manifest for `micro-os-plus-iii-cortexm/build.zig.zon`:
 #### What is the Fingerprint?
 Starting in modern Zig, package manifests include a 64-bit hexadecimal fingerprint (e.g. `0x95cd49afa981e1b1`).
 
-The fingerprint is a **deterministic hash computed over the structure and declared paths of the package manifest**. Its purposes are:
-1. **Detecting Unintended Manifest Changes**: Ensures downstream projects cannot silently alter package identity.
-2. **Cache Verification**: Accelerates dependency graph resolution by caching package hashes.
-3. **Package Disambiguation**: Differentiates between distinct packages sharing the same name.
+The fingerprint is the package's **identity**, not a content hash: 32 random bits chosen once, when the package is created (`zig init`, or the compiler's suggestion for a manifest without one), plus a 32-bit checksum of the package `.name`. It never changes afterwards: editing `.paths`, `.version` or the sources leaves it alone. Together with the name it lets the package manager tell a fork from the original and two unrelated packages of the same name apart. Renaming the package changes the checksum half, so the compiler then asks for a new fingerprint.
 
-#### How to Obtain the Exact Fingerprint: Step-by-Step
-When creating a new package or refactoring manifest paths, you do not need to calculate the 64-bit hash by hand. Follow this exact procedure:
+#### How to Obtain a Fingerprint: Step-by-Step
+When creating a new package (or after renaming one), let the compiler propose the value:
 
 1. **Set the Fingerprint to Zero (or omit it)**:
    In `build.zig.zon`:
@@ -586,7 +563,7 @@ When creating a new package or refactoring manifest paths, you do not need to ca
    ```
 5. **Re-run `zig build`**: The build will now proceed cleanly.
 
-For external dependencies downloaded from a URL or Git repository, the command `zig fetch --save <URL>` automatically calculates both the package hash and fingerprint, writing them directly into `build.zig.zon`.
+For external dependencies downloaded from a URL or Git repository, `zig fetch --save <URL>` writes the dependency's content **hash** (a different thing: the `.hash` of a dependency entry) into `build.zig.zon`; the dependency's fingerprint is in its own manifest.
 
 ---
 
@@ -779,7 +756,7 @@ The SMP scheduler manages a single, prioritized ready queue (`scheduler.ready_th
 - Each core runs an idle thread when no user threads are eligible:
   - Core 0 runs `idle`.
   - Core 1 runs `idle1`.
-- **Inter-Processor Interrupt (IPI)**: When Core 0 awakens a high-priority thread that is pinned to Core 1 (or Core 1 is executing lower priority work), Core 0 triggers an interrupt on Core 1 via the SIO FIFO. Core 1 receives the FIFO interrupt and executes `port.scheduler.reschedule()`, pre-empting its current thread immediately.
+- **Inter-Processor Interrupt (IPI)**: When Core 0 awakens a high-priority thread that is pinned to Core 1 (or Core 1 is executing lower priority work), Core 0 triggers an interrupt on Core 1 via the SIO FIFO. Core 1 receives the FIFO interrupt (IRQ 25 on the RP2350; `SIO_IRQ_PROC0`/`SIO_IRQ_PROC1`, IRQ 15/16, on the RP2040), drains the FIFO and executes `port.scheduler.reschedule()`, pre-empting its current thread immediately.
 
 ---
 
@@ -830,46 +807,47 @@ If the next thread is also interrupted, it repeats the same cascade. Wakeup toke
 
 ### 6.1 Mutexes & The Priority Inheritance Protocol (PIP)
 µOS++ IIIe implements POSIX-compatible mutual exclusion primitives with strict deterministic priority guarantees:
-- **`Normal`**: Non-recursive; re-locking by the owning thread returns `error.WouldBlock` or causes a self-deadlock.
-- **`Recursive`**: Re-entrant; tracks nested lock depth via `mx.count`. An identical number of `unlock()` calls must be performed before the mutex becomes unowned.
-- **`ErrorCheck`**: Explicit error detection; returns `error.WouldBlock` if re-locked and `error.NotPermitted` if unlocked by a non-owner.
-- **`Robust`**: Death-resilient locks. If an owning thread terminates while holding the mutex, the kernel marks `mx.owner_dead = true` and returns `error.NotRecoverable` to subsequent lockers, preventing system-wide deadlock.
+The type (`mutex.Type`), the protocol (`mutex.Protocol`: `.none`, `.inherit`, `.protect`) and the robustness (`mutex.Robustness`: `.stalled`, `.robust`) are attributes, as in POSIX:
+- **`.normal`**: Non-recursive; re-locking by the owner returns `error.WouldBlock` (POSIX leaves it a deadlock).
+- **`.recursive`**: Re-entrant; nested locks are counted in `mx.count`, and as many `unlock()` calls make it free; past `max_count` a lock returns `error.Again`.
+- **`.errorcheck`**: re-locking by the owner returns `error.Deadlock`; `unlock()` by a non-owner returns `error.NotPermitted`.
+- **`.robust`**: if the owner terminates while holding the mutex, the next locker gets it with `error.OwnerDead` and must call `consistent()`; unlocked without that, the mutex becomes unrecoverable and every later lock returns `error.NotRecoverable`.
 
 #### 6.1.1 The Priority Inversion Hazard
-Consider three threads: $T_H$ (high priority, $P=10$), $T_M$ (medium priority, $P=20$), and $T_L$ (low priority, $P=30$):
+Consider three threads: $T_H$ (`priority.high`), $T_M$ (`priority.normal`) and $T_L$ (`priority.low`). In µOS++ a **larger** value is a **higher** priority (`idle` = 1 « r, `low` = 2 « r, `normal` = 6 « r, `high` = 10 « r, `realtime` = 12 « r):
 1. $T_L$ acquires mutex $M_1$.
 2. $T_H$ becomes ready and attempts to acquire $M_1$. It blocks because $T_L$ owns it.
-3. $T_M$ becomes ready. Because $T_M$ ($P=20$) has a higher priority than $T_L$ ($P=30$), the scheduler preempts $T_L$ and runs $T_M$.
+3. $T_M$ becomes ready. Because $T_M$ has a higher priority than $T_L$, the scheduler preempts $T_L$ and runs $T_M$.
 4. **The Priority Inversion**: $T_H$ is indirectly starved by $T_M$, even though $T_H$ has higher priority than $T_M$ and does not share any resources with $T_M$! $T_M$ can run indefinitely, preventing $T_L$ from releasing $M_1$.
 
 ```
   Priority
      ▲
   TH │──────┐ (Needs M1)
-(10) │      │ [BLOCKED ON TL]
+(high)      │ [BLOCKED ON TL]
      │      │
   TM │      │               ┌───────────────────────┐ (Runs indefinitely)
-(20) │      │               │ Preempts TL & starves TH! │
+(normal)    │               │ Preempts TL & starves TH! │
      │      │               └───────────────────────┘
   TL │──────┴───────┐ (Holds M1)
-(30) │  Running     │ [PREEMPTED BY TM]
+(low)│  Running     │ [PREEMPTED BY TM]
      └──────────────┴───────────────────────────────────────► Time
 ```
 
 #### 6.1.2 Priority Inheritance Protocol & Transitive Chains
 µOS++ IIIe resolves this via dynamic **Priority Inheritance**:
-1. When $T_H$ blocks on $M_1$, the kernel immediately promotes $T_L$'s effective priority to $T_H$'s priority ($P=10$):
+1. When $T_H$ blocks on $M_1$, the kernel immediately promotes $T_L$'s effective priority to $T_H$'s:
    ```zig
    if (mx.protocol == .inherit) {
        owner.setPriorityInherited(th.priority());
    }
    ```
-2. $T_L$ can now no longer be preempted by $T_M$ ($P=20$); it runs to completion, finishes its critical section, and calls `unlock()`.
+2. $T_L$ can now no longer be preempted by $T_M$; it runs to completion, finishes its critical section, and calls `unlock()`.
 3. **Transitive Propagation**: If $T_L$ is itself blocked waiting on another mutex $M_2$ held by thread $T_{\text{lowest}}$, the priority boost propagates transitively down the entire lock graph:
    $$T_H \xrightarrow{\text{waits on}} M_1 \xrightarrow{\text{held by}} T_L \xrightarrow{\text{waits on}} M_2 \xrightarrow{\text{held by}} T_{\text{lowest}} \implies \text{Priority}(T_{\text{lowest}}) \leftarrow \text{Priority}(T_H)$$
 4. **Priority Restoration (De-boosting)**: When $T_L$ calls `unlock()`, its effective priority is not blindly reset to its base priority. Instead, the kernel scans all other mutexes still owned by $T_L$:
    $$\text{effective\_prio}(T_L) = \max \left( \text{base\_prio}(T_L), \max_{m \in \text{held\_mutexes}} (\text{max\_waiter\_prio}(m)) \right)$$
-   If $T_L$ holds no other contested mutexes, its priority returns to $P=30$.
+   If $T_L$ holds no other contested mutexes, its priority returns to `priority.low`.
 
 ---
 
@@ -879,27 +857,27 @@ Condition variables provide signaling primitives for threads waiting on state pr
 #### 6.2.1 The Atomic Unlock-and-Enqueue Problem
 In naive implementations, calling `wait(mx)` involves two separate steps: unlocking the mutex and putting the thread to sleep. If an interrupt or context switch occurs between unlocking and sleeping, a `signal()` from another thread can be lost, causing permanent thread hanging.
 
-In µOS++ IIIe, atomicity is guaranteed under `scheduler.CriticalSection`:
+In µOS++ IIIe the waiter is linked on the condition variable and the mutex released inside one scheduler critical section, so no switch can happen between the two (`src/rtos/condvar.zig`, abridged):
 ```zig
-pub fn wait(self: *ConditionVariable, mx: *Mutex) Error!void {
-    const scs = scheduler.CriticalSection.enter();
-    defer scs.exit();
+fn internalWait(cv: *ConditionVariable, mutex: *Mutex, timeout: ?clocks.Duration) Error!void {
+    if (interrupts.inHandlerMode()) return error.NotPermitted;
+    if (scheduler.locked()) return error.NotPermitted;
 
-    // 1. Validate mutex ownership
-    if (mx.owner != this_thread.thread()) return error.NotPermitted;
-
-    // 2. Enqueue calling thread directly onto CV wait list
-    self.list.link(this_thread.thread());
-
-    // 3. Atomically release the mutex and transfer wakeup token
-    _ = mx.unlockInternal();
-
-    // 4. Block thread and trigger immediate reschedule
-    this_thread.thread().state = .suspended;
-    port.scheduler.reschedule();
-
-    // 5. When awakened, re-acquire the mutex before returning to caller
-    try mx.lockInternal();
+    var w: scheduler.Waiter = .init(cv.clock, timeout);
+    {
+        // Link first, then release the mutex, all without a switch, so
+        // a signal between the two cannot be lost.
+        const scs = scheduler.CriticalSection.enter();
+        defer scs.exit();
+        {
+            const cs = interrupts.CriticalSection.enter();
+            defer cs.exit();
+            w.link(&cv.list);
+        }
+        mutex.unlock() catch |err| { ...unlink...; return err; };
+    }
+    // ... suspend until signalled, interrupted or timed out, unlink,
+    // then lock the mutex again before returning (also on a timeout).
 }
 ```
 
@@ -924,29 +902,30 @@ while (!condition_is_met) {
 │ **Semaphore**     │ Atomic counter decrement.      │ Binary or         │
 │                   │ Enqueues when counter == 0.    │ Counting.         │
 ├───────────────────┼────────────────────────────────┼───────────────────┤
-│ **Event Flags**   │ 32-bit bitmask comparison.     │ `waitAny` or      │
-│                   │ Enqueues until mask matches.   │ `waitAll`.        │
+│ **Event Flags**   │ 32-bit bitmask comparison.     │ `wait(mask, mode)`│
+│                   │ Enqueues until mask matches.   │ `.any` / `.all`.  │
 ├───────────────────┼────────────────────────────────┼───────────────────┤
-│ **Message Queue** │ Circular ring buffer.          │ Prioritized msgs, │
-│                   │ Enqueues on Empty/Full.        │ zero-copy ptrs.   │
+│ **Message Queue** │ Fixed-size slots, copied in.   │ Prioritized msgs, │
+│                   │ Enqueues on Empty/Full.        │ by value.         │
 └───────────────────┴────────────────────────────────┴───────────────────┘
 ```
 
 #### 6.3.1 Counting & Binary Semaphores
-- **`CountingSemaphore`**: Backed by a 32-bit integer counter. `post()` increments the counter atomically under a critical section and wakes up the highest-priority waiting thread if the counter transitions from $0$. `wait()` blocks if the counter is $0$, otherwise decrements the counter.
-- **`BinarySemaphore`**: Equivalent to a counting semaphore with a maximum value of $1$.
+One type, `rtos.Semaphore`, with two constructors:
+- **`Semaphore.counting(name, max_value, initial_value)`**: `post()` increments the count under a critical section, or wakes the highest-priority waiter; `wait()` blocks while the count is $0$, otherwise decrements it (`tryWait()`, `timedWait()`). A `post()` beyond `max_value` returns `error.Again`.
+- **`Semaphore.binary(name, initial_value)`**: the same with a maximum value of $1$.
 
 #### 6.3.2 Event Flags
 Event flags provide multi-bit synchronization without allocating memory:
-- **`waitAny(mask)`**: Evaluates whether $(\text{current\_flags} \ \& \ \text{mask}) \neq 0$. If any bit matches, returns immediately.
-- **`waitAll(mask)`**: Evaluates whether $(\text{current\_flags} \ \& \ \text{mask}) == \text{mask}$. Blocks until all specified bits are asserted.
-- **Atomic Clear on Exit**: If configured with `mode = .clear`, the matched bits are atomically cleared before the calling thread unblocks, preventing double processing.
+- **`wait(mask, .{ .any = true })`**: returns as soon as $(\text{flags} \ \& \ \text{mask}) \neq 0$.
+- **`wait(mask, .{ .all = true })`**: blocks until $(\text{flags} \ \& \ \text{mask}) == \text{mask}$.
+- **Clear on exit**: with `.clear = true` in the mode (`flags.Mode`), the matched bits are cleared before the thread returns, preventing double processing. `tryWait()`, `timedWait()`, `raise()`, `clear()` and `get()` complete the API.
 
-#### 6.3.3 Message Queues (Zero-Copy Ring Buffers)
-Message queues allow threads and ISRs to exchange structured data:
-- **Zero-Copy Architecture**: Only pointers (`*anyopaque` or `usize`) are copied into the internal circular ring buffer, avoiding stack and buffer copy overheads.
-- **Priority-Ordered Messages**: Senders can specify a message priority ($0..255$). High-priority messages are inserted at the head of the ring, bypassing normal FIFO ordering for urgent commands.
-- **ISR-Safe Posting**: `postFromInterrupt()` allows interrupt handlers to enqueue data directly into the queue without sleeping or calling blocking scheduler routines.
+#### 6.3.3 Message Queues
+Message queues allow threads and ISRs to exchange fixed-size messages, as the C++ `message_queue`:
+- **By Value**: `init(name, msgs, msg_size_bytes, buffer, attr)` sizes the queue; `send()` copies the message into a free slot and `receive()` copies it out (`storageSize()` gives the buffer size). To pass large data, send a pointer as the message. `MessageQueueTyped(T)` wraps it for one type.
+- **Priority-Ordered Messages**: each message has a priority (`u8`); the slots are kept in a list ordered by priority, FIFO among equal priorities, and `receive()` returns the highest first, with its priority.
+- **From Interrupts**: `trySend()` and `tryReceive()` never block and may be called from an ISR; `send()`/`timedSend()` and `receive()`/`timedReceive()` block a thread.
 
 ---
 
@@ -985,7 +964,7 @@ The C++ `timer::internal_callback()` has the same window.
 ### 7.1 The Dual Stack Model: MSP vs PSP
 Cortex-M processors provide two stack pointer registers banked under the name `SP`:
 - **Main Stack Pointer (MSP)**: Used by the OS kernel, interrupt service routines (SysTick, UART, timers), and exception handlers (HardFault, PendSV).
-- **Process Stack Pointer (PSP)**: Used exclusively by unprivileged application threads.
+- **Process Stack Pointer (PSP)**: Used by the threads (`CONTROL.SPSEL = 1`); the threads stay privileged, as in C++.
 
 ```
        Interrupt Context (Hardware)             Thread Context (Software)
@@ -1031,53 +1010,30 @@ If the hardware FPU is enabled and was actively used by the interrupted thread, 
 ### 7.3 Software Context Switch in PendSV Assembly
 µOS++ IIIe triggers context switches by setting the PendSV bit in the NVIC Interrupt Control and State Register (ICSR). Because PendSV is configured with the lowest interrupt priority, it executes only when all other interrupts have completed.
 
-Here is the exact context switch sequence implemented in assembly:
+The handler is a Zig naked function (`src/context.zig`), installed as MicroZig's `PendSV` vector; this is the ARMv7-M / ARMv8-M Mainline version with an FPU (`pendSvHandlerV6m` is the ARMv6-M one for the RP2040: no `stmdb`, and `ldm`/`stm` reach only r0–r7):
 
-```armasm
-.thumb_func
-.type PendSV_Handler, %function
-PendSV_Handler:
-    cpsid   i                       ; Disable interrupts during switch
-    mrs     r0, psp                 ; Read current thread's stack pointer
-
-    ; 1. Save software-managed integer context
-    stmdb   r0!, {r4-r11}           ; Push callee-saved registers r4-r11
-
-    ; 2. Check for active FPU context (EXC_RETURN bit 4)
-    tst     lr, #0x10               ; Bit 4 = 0 means FPU extended frame is active
-    it      eq
-    vstmdbeq r0!, {s16-s31}         ; Push high FPU registers s16-s31
-
-    ; 3. Save updated stack pointer into current thread control block
-    ldr     r1, =current_thread     ; Get pointer to current thread pointer
-    ldr     r2, [r1]                ; r2 = current_thread
-    str     r0, [r2, #CONTEXT_SP]   ; current_thread.context.stack.top = r0
-
-    ; 4. Call scheduler to pick next ready thread
-    push    {lr}                    ; Save EXC_RETURN code on MSP
-    bl      uos_scheduler_switch    ; Returns next thread pointer in r0
-    pop     {lr}                    ; Restore EXC_RETURN code
-
-    ; 5. Load next thread's stack pointer
-    ldr     r1, =current_thread
-    str     r0, [r1]                ; current_thread = next_thread
-    ldr     r0, [r0, #CONTEXT_SP]   ; r0 = next_thread.context.stack.top
-
-    ; 6. Restore FPU context if incoming thread uses FPU
-    tst     lr, #0x10
-    it      eq
-    vldmiaeq r0!, {s16-s31}         ; Pop high FPU registers s16-s31
-
-    ; 7. Restore software-managed integer context
-    ldmia   r0!, {r4-r11}           ; Pop callee-saved registers r4-r11
-
-    ; 8. Update Process Stack Pointer
-    msr     psp, r0                 ; Set PSP to incoming thread's stack
-    cpsie   i                       ; Re-enable interrupts
-
-    ; 9. Return from exception
-    bx      lr                      ; Hardware automatically pops r0-r3, r12, lr, pc, xPSR
+```zig
+pub fn pendSvHandlerV7m() callconv(.naked) void {
+    asm volatile (
+        \\ mrs r0, psp
+        \\ isb
+        \\ tst lr, #0x10              // EXC_RETURN bit 4 = 0: an extended (FP) frame
+        \\ it eq
+        \\ vstmdbeq r0!, {s16-s31}    // the high FP registers, only then
+        \\ stmdb r0!, {r4-r11, lr}    // r4-r11 and EXC_RETURN, on the thread's stack
+        \\ bl uos_port_switch_stacks  // r0 = outgoing SP -> r0 = incoming SP
+        \\ ldmia r0!, {r4-r11, lr}
+        \\ tst lr, #0x10
+        \\ it eq
+        \\ vldmiaeq r0!, {s16-s31}
+        \\ msr psp, r0
+        \\ isb
+        \\ bx lr                      // the hardware unstacks r0-r3, r12, lr, pc, xPSR
+    );
+}
 ```
+
+`uos_port_switch_stacks()` (`src/port.zig`) runs on the MSP with the PendSV priority: it masks the interrupts, takes the kernel lock on SMP, publishes the outgoing stack pointer into `current_thread[cpu].context.port.stack_ptr`, calls the kernel's `internalSwitchThreads()`, claims the incoming thread (`stack_ptr = null`) and returns its saved stack pointer. Saving `EXC_RETURN` with the frame lets each thread resume with its own frame type (FP or not). On Cortex-M the outgoing frame is complete before `uos_port_switch_stacks()` runs (the PSP is no longer in use), so it is published there, not after the switch as on the A-profile ports.
 
 ---
 
@@ -1096,14 +1052,15 @@ Bit 4 (`0x10`) dynamically indicates whether the hardware FPU context was stacke
 
 ### 7.5 Stack Watermarking & Auditing
 Every stack is filled with the sentinel watermark `0xEFBEADDE` at initialization.
-The kernel audits runtime stack consumption by scanning from the bottom of the stack storage upwards to locate the first non-watermark word:
+The kernel audits runtime stack consumption by scanning from the bottom of the stack storage upwards to locate the first non-watermark word (`Thread.Stack.available()`, `src/rtos/thread.zig`; the magic is the port's `stack_magic`, otherwise `0xEFBEADDE`):
 ```zig
-pub fn stackUsedBytes(self: *const Stack) usize {
-    var p: [*]const u32 = @ptrCast(@alignCast(self.bottom));
-    const words = self.size_bytes / 4;
-    var unused: usize = 0;
-    while (unused < words and p[unused] == 0xEFBEADDE) : (unused += 1) {}
-    return self.size_bytes - (unused * 4);
+pub fn available(st: *const Stack) usize {
+    const p = st.bottom();
+    var count: usize = 0;
+    while (count < st.size_bytes and
+        p[count / @sizeOf(StackElement)] == stack_magic) : (count += @sizeOf(StackElement))
+    {}
+    return count;   // the untouched bytes; used = size - available
 }
 ```
 This enables live reports like:
@@ -1167,7 +1124,7 @@ In hard real-time systems (e.g. motor control, digital power inverters, high-spe
 ```
 
 #### 7.7.1 The `BASEPRI` Masking Mechanism (Cortex-M4 / STM32F411)
-When configured with `critical_section_interrupt_priority = 5`:
+When configured with `critical_section_interrupt_priority = 5` (the single-CPU path; on SMP `criticalEnter()` saves PRIMASK and takes the kernel lock instead):
 ```zig
 pub inline fn criticalEnter() State {
     if (basepri_level) |level| {
@@ -1222,9 +1179,9 @@ On the dual Cortex-M33 RP2350, interrupt topology presents distinct architectura
 
 1. **Independent Private NVICs**: Core 0 and Core 1 have physically separate NVIC hardware instances. An interrupt enabled on Core 0's NVIC is **not** enabled on Core 1's NVIC unless explicitly configured.
 2. **Peripheral IRQ Pinning & USB CDC-ACM**:
-   In `smp-test-usb-cdc-acm`, the USB device controller driver (`rp2xxx.usb.Polled`) and console bridge task are pinned to Core 0 (`cpu_affinity = 0b01`).
-   - `USBCTRL_IRQ` (IRQ 24) is unmasked exclusively in Core 0's NVIC.
-   - If the USB service thread were permitted to migrate to Core 1, the USB interrupt would fire on Core 0 while the servicing thread executed on Core 1. Core 0 would enter an unhandled ISR loop, while Core 1 would never see USB packets, causing host enumeration failure. Pinning guarantees that the interrupt, the CDC driver ring, and the CDC task share the same core, eliminating cross-core cache thrashing.
+   In `smp-test-usb-cdc-acm`, the USB device driver (MicroZig's `rp2xxx.usb.Polled`) and the console bridge task are pinned to Core 0 (`setCpuAffinity(1 << 0)`), the blink task to Core 1.
+   - The driver is **polled**: no USB interrupt is enabled on either core; the USB thread calls `usb_device.poll()` in its loop.
+   - The pinning keeps the driver's state (endpoint buffers, the CDC rings) with one thread on one core, as the C++ test does with TinyUSB's `tud_task()`.
 
 ---
 
@@ -1265,7 +1222,7 @@ pub fn ipi(cpu: u32) void {
 
 #### 7.10.1 Clock Drift Prevention in Dual-Core SMP
 A fundamental challenge in multi-core RTOS design is maintaining a single, coherent time base. Both Core 0 and Core 1 have their own private SysTick timer hardware running at the CPU clock frequency ($150\text{ MHz}$).
-- If both cores advanced the kernel time base (`clock.advanceTick()`), the RTOS clock would advance at twice the intended rate, corrupting all `sleepFor()`, timed mutex, and software timer delays.
+- If both cores advanced the kernel time base (`uos.rtos.clocks.sysTickHandler()`), the RTOS clock would advance at twice the intended rate, corrupting all `sleepFor()`, timed mutex, and software timer delays.
 - In µOS++ IIIe, the SysTick interrupt handler is specialized by core ID:
   ```zig
   fn sysTickHandler() callconv(.c) void {
@@ -1284,7 +1241,7 @@ A fundamental challenge in multi-core RTOS design is maintaining a single, coher
 Cortex-M microcontrollers do not permit context switching directly from within standard peripheral ISRs. Doing so would push multiple exception frames onto the MSP and corrupt nested interrupt states.
 - Context switching is always deferred to **PendSV (Pended Service Call)**, which is configured to the absolute lowest execution priority ($0\text{xFF}$).
 - When an ISR calls `scheduler.reschedule()`, it sets bit 28 (`PENDSVSET`) in `ICSR`.
-- If nested interrupts are active, the hardware executes all of them first (**Tail-Chaining** in just $6$ clock cycles). Only when the last ISR completes does the hardware enter `PendSV_Handler`, performing the register save/restore sequence on the PSP cleanly.
+- If nested interrupts are active, the hardware executes all of them first (**Tail-Chaining** in just $6$ clock cycles). Only when the last ISR completes does the hardware enter the PendSV handler, performing the register save/restore sequence on the PSP cleanly.
 
 ---
 
@@ -1315,28 +1272,25 @@ pub fn main() void {
 }
 
 fn appMain() u8 {
-    t.reset();
-    t.section("Basic Semaphore Verification");
-    
-    var sem: rtos.Semaphore = .init("sem1", 0, 10);
-    t.eq(@as(u32, 0), sem.value(), @src());
-    
-    t.success(sem.post(), @src());
-    t.eq(@as(u32, 1), sem.value(), @src());
-    
-    t.success(sem.wait(), @src());
-    t.eq(@as(u32, 0), sem.value(), @src());
-    
-    return @intFromBool(t.summary("sem-test") != 0);
+    var sem: rtos.Semaphore = .counting("sem1", 10, 0);
+    t.expectEqual(@as(i16, 0), sem.value(), "initial value");
+
+    sem.post() catch |e| t.expect(false, "post: {s}", .{@errorName(e)});
+    t.expectEqual(@as(i16, 1), sem.value(), "after post");
+
+    sem.tryWait() catch |e| t.expect(false, "tryWait: {s}", .{@errorName(e)});
+    t.expectError(error.WouldBlock, sem.tryWait(), "tryWait on zero");
+
+    return t.summary("sem-test"); // 0 = PASS
 }
 ```
 
-The assertion API provides source location tracking via Zig's `@src()`:
-- `t.ok(condition, @src())`: Assert boolean truth.
-- `t.eq(expected, actual, @src())`: Assert value equality with formatted diagnostics on mismatch.
-- `t.success(result, @src())`: Assert that an error union returned without error.
-- `t.err(expected_err, result, @src())`: Assert that an operation failed with a specific error.
-- `t.summary("suite_name")`: Prints total checks, failed count, and stack watermarks.
+The check API (`test/harness.zig`, module `uos_test`):
+- `t.expect(ok, "what {d}", .{args})`: record a check; a failed one is traced with its formatted description.
+- `t.expectEqual(expected, actual, "what")`: the same for a value (`std.meta.eql`), tracing both values on a mismatch.
+- `t.expectError(error.X, result, "what")`: the error union must fail with that error.
+- `t.passed()`: the verdict so far; `t.summary("name")`: prints `name: N checks, M failed` and returns the exit code (0 = PASS).
+- `t.run(appMain)`: runs `appMain` as the main thread with a 4 Hz LED heartbeat; its return value goes to `exit()`, so `RESULT: PASS`/`FAIL` follows from it. `t.options(.{ ... })` gives the board's CPU count, SMP, the test stacks and a 64 KiB heap, with the overrides.
 
 ---
 
@@ -1362,7 +1316,7 @@ const tests = [_]Test{
     // ...
 };
 ```
-- `smp_only` skips the test on single-core boards; `only` keeps it on one board.
+- `smp_only` skips the test on single-core boards; `only` keeps it on one board (the entries shown are examples; the real list is in `build.zig`).
 - A test ported one to one from a board's C++ folder is listed in `board_tests` and lives in `test/<board>/<test>/main.zig`; it replaces the generic `test/<test>/main.zig`.
 - `c_sources`/`c_flags` link C code with the test; the kernel's C include folders (`addCIncludes()`) and `test/<test>/include` are added.
 - `cmsis_rv` also compiles the Arm CMSIS-RTOS validator sources from the xPack given with `-Dcmsis_rv` (default `~/.local/xPacks/@xpacks/arm-cmsis-rtos-validator/1.0.0-4`); without it the test is skipped.
@@ -1396,8 +1350,8 @@ The runner script `test/hw.sh` orchestrates this via OpenOCD and ARM Semihosting
                        │
                        ▼
                [Target Executes]
-        • Trace streamed via semihosting
-        • UART pins left 100% free for user
+        • Trace on the board UART and mirrored
+          to semihosting (OpenOCD's log)
                        │
                        ▼
           [Log Monitor in hw.sh]
@@ -1408,10 +1362,10 @@ The runner script `test/hw.sh` orchestrates this via OpenOCD and ARM Semihosting
         • Clean termination with code 0
 ```
 
-#### Why Semihosting Over UART?
-1. **User Freedom**: The hardware UART pins (GP0/GP1 on Pico 2, PA9/PA10 on STM32) remain 100% available for the user's terminal monitor without host serial port locks or contention.
-2. **Reliability**: Semihosting travels directly over the SWD debug bus via the CMSIS-DAP probe. It is immune to baud rate mismatches or floating serial inputs.
-3. **Automated Exit Code**: Upon test completion, `uos.rtos.terminate(0)` issues an ARM semihosting `SYS_EXIT` call (`0x18`), allowing the automated bash harness to detect pass/fail immediately.
+#### Why Semihosting for the Runner?
+1. **The UART stays the user's**: the trace goes to the board UART (GP0/GP1 on the Picos, PA9/PA10 on the STM32), for a terminal (`tio`); the runner never opens a serial port. A test may route the trace elsewhere with a root `uos_trace_write` (the USB test).
+2. **Reliability**: the semihosting mirror travels over the SWD debug link via the CMSIS-DAP probe: no baud rate, no port to share.
+3. **Automated Exit Code**: at the end, `uos.rtos.terminate(code)` traces `_Exit()` and the stacks, and the port's `terminate()` prints a `RESULT` line if the test printed none, drains the UART and issues the semihosting `SYS_EXIT` (`0x18`); the runner has already seen the verdict line.
 
 ---
 
@@ -1453,7 +1407,7 @@ A freestanding target has no libc, and MicroZig's foundation-libc has no `printf
 Every test is a faithful port of a C++ test (same banners, lines, LED behaviour and verdict); the deviations are stated in each `main.zig`. The harness suites (`fp-switch`, `mutex-stress`, `rtos-apis`, `cmsis-os-validator`) run as in the C++ pico2 harness build: one CPU, with the suite's `os-app-config.h` values.
 
 ### 10.1 Raspberry Pi Pico 2 (RP2350 Dual Cortex-M33 SMP)
-*Probed with the Raspberry Pi Debug Probe (`2e8a:000c`). Reset or power cycle the board between tests.*
+*Probed with the Raspberry Pi Debug Probe (`2e8a:000c`). All 16 pass in one `test/run-all.sh pico2` run (2026-10-16); `smp-test-usb-cdc-acm` needs a board reset when it follows another test (the USB controller keeps its state across a debugger reset).*
 
 | Test | Status | Notes |
 |---|---|---|
@@ -1467,29 +1421,56 @@ Every test is a faithful port of a C++ test (same banners, lines, LED behaviour 
 | `sc-test-ko` | **PASS** | Single core, 10/10. |
 | `smp-test-ko` | **PASS** | 10/10. |
 | `exc-test` | **PASS** | Phase B handler mode on its own MSP stack (as the fixed C++ test). |
-| `smp-test-usb-cdc-acm` | **PASS** | After a reset; without one it panics at start (USB state kept from the previous test). |
+| `smp-test-usb-cdc-acm` | **PASS** | After a reset; without one it panics at start (USB state kept from the previous test). Ends when the host sends Escape. |
 | `fp-switch` | **PASS** | 3681 rounds, 0 bad. |
 | `mutex-stress` | **PASS** | 10 threads, 35 s report: sigma 7, delta within ±6 %. |
 | `rtos-apis` | **PASS** | C++ API, C API (`test-c-api.c`), ISO and POSIX I/O parts. |
 | `cmsis-os-validator` | **PASS** | Arm CMSIS-RTOS validator, 60/60. |
 | `io-test` | **PASS** | `std.Io` suite, 25/25. |
 
-### 10.2 WeAct Black Pill (STM32F411CE Cortex-M4F Single-Core)
+### 10.2 Raspberry Pi Pico (RP2040 Dual Cortex-M0+ SMP)
+*Probed with the Raspberry Pi Debug Probe (`2e8a:000c`) over SWD (`set FLASHSIZE 0x200000; set USE_CORE BOTH`, `rp2040.core1` resumed before `rp2040.core0` with `arm semihosting enable` kept active). All 16 pass in one `test/run-all.sh pico` run (2026-10-16).*
+
+| Test | Status | Notes |
+|---|---|---|
+| `smp-test0` | **PASS** | Phase 1, bare bring-up without the RTOS: clocks at 125 MHz, UART0, core 1 launched. |
+| `smp-test1` | **PASS** | Single-core scheduler & 1 ms SysTick. |
+| `smp-test2` | **PASS** | CPU affinity (`wrk0 on core 0 20/20, wrk1 on core 1 20/20`). |
+| `smp-test3` | **PASS** | Cross-core IPI ping-pong (`SIO_IRQ_PROC0`/`1`, 4000 explicit IPIs, 0 slow). |
+| `smp-test4` | **PASS** | All 7 SMP kernel primitives (`S1..S7 PASS`). |
+| `smp-test5` | **PASS** | Cross-core IRQ-driven UART0 TX (`IRQ 20` on Core 1, 1000 lines, 48848 B, 0 dropped). |
+| `smp-mat-test` | **PASS** | 80×80 tiled block solver (B=20), speedup 1.183×, max diff 0.000000. |
+| `sc-test-ko` | **PASS** | Single core, 10/10. |
+| `smp-test-ko` | **PASS** | Dual-core SMP, 10/10. |
+| `exc-test` | **PASS** | ARMv6-M exception probe (`systick=6942 pendsv=1`). |
+| `smp-test-usb-cdc-acm` | **PASS** | USB CDC-ACM (`Cafe:4013`) mounted and echoed across 2 cores. |
+| `fp-switch` | **PASS** | Soft-float / no-FPU check. |
+| `mutex-stress` | **PASS** | 10 threads, 30 s report: `sum=2399, avg=240, sigma=6`. |
+| `rtos-apis` | **PASS** | C++ API, C API (`test-c-api.c`), ISO and POSIX I/O parts. |
+| `cmsis-os-validator` | **PASS** | Arm CMSIS-RTOS validator (`TIMER_IRQ_0`), 60/60. |
+| `io-test` | **PASS** | `std.Io` suite, 25/25. |
+
+### 10.3 WeAct Black Pill (STM32F411CE Cortex-M4F Single-Core)
 *Probed with a WCH-Link in ARM mode (`1a86:8011`). It may drop the connection under heavy semihosting traffic; reset and run again. The probe also bridges the UART, and drops what it has not forwarded when OpenOCD disconnects: `terminate()` therefore drains the UART and waits about 1 s before the semihosting `SYS_EXIT`.*
 
 | Test | Status | Notes |
 |---|---|---|
-| `smp-test0` | **PASS** | |
+| `smp-test0` | **PASS** | 40 beats on cpu0. |
+| `smp-test1` | **PASS** | 12 checks. |
+| `smp-mat-test` | **PASS** | N = 64 on one CPU, max \|dx\| = 0. |
+| `sc-test-ko` | **PASS** | |
 | `fp-switch` | **PASS** | 2474 rounds, 0 bad. |
-| `mutex-stress` | **PASS** | 35 s report: sigma 9, delta within ±5 %. |
-| `rtos-apis` | **PASS** | All four parts, as on the Pico 2. |
+| `mutex-stress` | **PASS** | 30 s; sigma 3–4. |
+| `rtos-apis` | **PASS** | All four parts, 127 checks. |
 | `cmsis-os-validator` | **PASS** | 60/60. |
-| `spi-pipeline` | **PASS** | 8/8. |
-| `smp-test1`, `smp-mat-test`, `sc-test-ko`, `io-test` | builds | Not run on this board in the last round. |
+| `io-test` | **PASS** | 25/25. |
+| `spi-pipeline` | **PASS** | 8/8 iterations. |
+
+All 10 pass (`test/run-all.sh weactf411`, 2026-10-16).
 
 ---
 
-### 10.3 POSIX Host (GNU/Linux x86_64, host threads as CPUs)
+### 10.4 POSIX Host (GNU/Linux x86_64, host threads as CPUs)
 *The `micro-os-plus-iii-posix-arch` port; `test/run-all.sh` runs all of them. Outputs compared with the C++ native builds of the `smp` branch.*
 
 | Test | Status | Notes |

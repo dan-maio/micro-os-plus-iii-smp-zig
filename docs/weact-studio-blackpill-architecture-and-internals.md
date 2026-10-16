@@ -9,7 +9,7 @@ This document provides a comprehensive, deep-level technical reference for the *
 
 µOS++ IIIe is a deterministic, object-oriented micro-kernel designed by Liviu Ionescu for embedded systems requiring mathematical scheduling guarantees, modular synchronization primitives, and clean separation between portable kernel logic and architecture-specific hardware ports.
 
-On the WeAct Studio Black Pill, the port targets the **ARM Cortex-M4F** architecture, exercising single-core preemption, zero-latency interrupt handling via `BASEPRI`, hardware floating-point context switching, and high-speed hardware SPI NOR Flash streaming. Across all **9 hardware test suites**, physical silicon verification using the WCH-Link CMSIS-DAP probe achieved a **100% pass rate**.
+On the WeAct Studio Black Pill, the port targets the **ARM Cortex-M4F** architecture, exercising single-core preemption, zero-latency interrupt handling via `BASEPRI`, hardware floating-point context switching, and high-speed hardware SPI NOR Flash streaming. All **10 hardware tests** pass on the board, through OpenOCD and the WCH-Link CMSIS-DAP probe (2026-10-16).
 
 ---
 
@@ -165,16 +165,16 @@ If an unmanaged ISR attempts to call an RTOS function, `isPriorityValid()` retur
 ### 2.4 Kernel Mutexes & The Priority Inheritance Protocol (PIP)
 
 µOS++ IIIe implements full POSIX mutual exclusion semantics with priority inheritance:
-- `Normal`: Non-recursive; re-locking results in deadlock or `error.WouldBlock`.
-- `Recursive`: Re-entrant; tracks nested lock depth via `mx.count`. An identical number of `unlock()` calls must be performed before the mutex becomes unowned.
-- `ErrorCheck`: Explicit error detection; returns `error.WouldBlock` if re-locked and `error.NotPermitted` if unlocked by a non-owner.
-- `Robust`: Protects against owner thread death. If an owner terminates while holding the mutex, the kernel sets `mx.owner_dead = true` and returns `error.NotRecoverable` to subsequent lockers.
+- `.normal`: Non-recursive; re-locking by the owner returns `error.WouldBlock`.
+- `.recursive`: Re-entrant; nested locks are counted in `mx.count`, and as many `unlock()` calls make it free.
+- `.errorcheck`: re-locking by the owner returns `error.Deadlock`; `unlock()` by a non-owner returns `error.NotPermitted`.
+- `.robust` (the robustness attribute): if the owner terminates holding the mutex, the next locker gets it with `error.OwnerDead` and must call `consistent()`; otherwise later lockers get `error.NotRecoverable`.
 
 #### 2.4.1 Priority Inversion Prevention
-If a low-priority worker ($T_L$, $P=30$) holds a mutex required by a high-priority worker ($T_H$, $P=10$), middle-priority threads ($T_M$, $P=20$) could preempt $T_L$ and starve $T_H$ indefinitely.
+If a low-priority worker ($T_L$, `priority.low`) holds a mutex required by a high-priority worker ($T_H$, `priority.high`), middle-priority threads ($T_M$, `priority.normal`) could preempt $T_L$ and starve $T_H$ indefinitely. (In µOS++ a larger value is a higher priority.)
 
 µOS++ resolves this via dynamic **Priority Inheritance**:
-1. When $T_H$ blocks on the mutex, the kernel promotes $T_L$'s effective priority to $T_H$'s priority ($P=10$):
+1. When $T_H$ blocks on the mutex, the kernel promotes $T_L$'s effective priority to $T_H$'s:
    ```zig
    if (mx.protocol == .inherit) {
        owner.setPriorityInherited(th.priority());
@@ -221,11 +221,11 @@ This guarantees starvation-free mutex teardown under asynchronous interruption.
 │ **Semaphore**     │ Atomic counter decrement.      │ Binary or         │
 │                   │ Enqueues when counter == 0.    │ Counting.         │
 ├───────────────────┼────────────────────────────────┼───────────────────┤
-│ **Event Flags**   │ 32-bit bitmask comparison.     │ `waitAny` or      │
-│                   │ Enqueues until mask matches.   │ `waitAll`.        │
+│ **Event Flags**   │ 32-bit bitmask comparison.     │ `wait(mask, mode)`│
+│                   │ Enqueues until mask matches.   │ `.any` / `.all`.  │
 ├───────────────────┼────────────────────────────────┼───────────────────┤
-│ **Message Queue** │ Circular ring buffer.          │ Prioritized msgs, │
-│                   │ Enqueues on Empty/Full.        │ zero-copy ptrs.   │
+│ **Message Queue** │ Fixed-size slots, copied in.   │ Prioritized msgs, │
+│                   │ Enqueues on Empty/Full.        │ by value.         │
 ├───────────────────┼────────────────────────────────┼───────────────────┤
 │ **CondVar**       │ Atomically releases mutex and  │ Predicate-based   │
 │                   │ enqueues caller onto CV list.  │ signaling.        │
@@ -239,7 +239,7 @@ This guarantees starvation-free mutex teardown under asynchronous interruption.
 ### 3.1 Dual-Stack Architecture: MSP vs PSP Separation
 The ARM Cortex-M4 provides two banked physical stack pointers:
 - **Main Stack Pointer (MSP)**: Used by kernel initialization, exception handlers, and all Interrupt Service Routines.
-- **Process Stack Pointer (PSP)**: Used exclusively by unprivileged application threads.
+- **Process Stack Pointer (PSP)**: Used by the threads (`CONTROL.SPSEL = 1`); the threads stay privileged.
 
 ```
        Handler / Exception Mode                      Thread / User Mode
@@ -292,52 +292,31 @@ The Cortex-M4 implements **Lazy Stacking**:
 
 ---
 
-### 3.3 PendSV Assembly Context Switch Implementation
-Context switching is executed cooperatively inside `PendSV_Handler`, configured to priority 15 (lowest):
+### 3.3 PendSV Context Switch Implementation
+Context switching runs in the PendSV handler, configured to the lowest priority. It is a Zig naked function (`src/context.zig`, `pendSvHandlerV7m`, the FPU variant on the F411):
 
-```armasm
-.thumb_func
-.type PendSV_Handler, %function
-PendSV_Handler:
-    cpsid   i                       ; 1. Mask interrupts during context switch
-    mrs     r0, psp                 ; 2. Load Process Stack Pointer of outgoing thread
-
-    ; 3. Save software-managed integer registers
-    stmdb   r0!, {r4-r11}           ; Push callee-saved registers r4-r11
-
-    ; 4. Check whether outgoing thread actively used the FPU (EXC_RETURN bit 4)
-    tst     lr, #0x10               ; Bit 4 = 0 indicates active extended FPU frame
-    it      eq
-    vstmdbeq r0!, {s16-s31}         ; Push high FPU registers s16-s31 ONLY if needed!
-
-    ; 5. Save updated stack pointer into current thread control block
-    ldr     r1, =current_thread     ; Pointer to current thread
-    ldr     r2, [r1]                ; r2 = current_thread
-    str     r0, [r2, #CONTEXT_SP]   ; current_thread.context.stack.top = r0
-
-    ; 6. Invoke scheduler switch routine
-    push    {lr}                    ; Save EXC_RETURN code on MSP
-    bl      uos_scheduler_switch    ; Pick next ready thread; returns new thread pointer in r0
-    pop     {lr}                    ; Restore EXC_RETURN code
-
-    ; 7. Load incoming thread's stack pointer
-    ldr     r1, =current_thread
-    str     r0, [r1]                ; current_thread = next_thread
-    ldr     r0, [r0, #CONTEXT_SP]   ; r0 = next_thread.context.stack.top
-
-    ; 8. Restore high FPU registers if incoming thread used FPU
-    tst     lr, #0x10
-    it      eq
-    vldmiaeq r0!, {s16-s31}         ; Pop high FPU registers s16-s31
-
-    ; 9. Restore software-managed integer registers
-    ldmia   r0!, {r4-r11}           ; Pop callee-saved registers r4-r11
-
-    ; 10. Update Process Stack Pointer and exit
-    msr     psp, r0                 ; Set PSP to incoming thread's stack
-    cpsie   i                       ; Re-enable interrupts
-    bx      lr                      ; Hardware automatically pops r0-r3, r12, lr, pc, xPSR
+```zig
+pub fn pendSvHandlerV7m() callconv(.naked) void {
+    asm volatile (
+        \\ mrs r0, psp
+        \\ isb
+        \\ tst lr, #0x10              // EXC_RETURN bit 4 = 0: an extended (FP) frame
+        \\ it eq
+        \\ vstmdbeq r0!, {s16-s31}    // the high FP registers, only for FP threads
+        \\ stmdb r0!, {r4-r11, lr}    // r4-r11 and EXC_RETURN
+        \\ bl uos_port_switch_stacks  // r0 = outgoing SP -> r0 = incoming SP
+        \\ ldmia r0!, {r4-r11, lr}
+        \\ tst lr, #0x10
+        \\ it eq
+        \\ vldmiaeq r0!, {s16-s31}
+        \\ msr psp, r0
+        \\ isb
+        \\ bx lr                      // the hardware unstacks r0-r3, r12, lr, pc, xPSR
+    );
+}
 ```
+
+`uos_port_switch_stacks()` (`src/port.zig`) masks the interrupts, saves the outgoing stack pointer in the current thread, calls the kernel's `internalSwitchThreads()` and returns the next thread's saved stack pointer. Each thread's `EXC_RETURN` is saved with its frame, so a thread resumes with its own frame type.
 
 #### EXC_RETURN Values on Cortex-M4F
 - **`0xFFFFFFFD`**: Return to Thread Mode using Process Stack (PSP); standard integer frame (32 bytes).
@@ -437,41 +416,59 @@ The Winbond W25Q128 NOR Flash ($16\text{ MBytes}$) is partitioned to accommodate
 
 ### 5.3 Physical Silicon Execution Results (8 Iterations Clean)
 
+The 2026-10-16 run (the semihosting log, the per-cycle snapshots left out; the CRCs depend on the image):
+
 ```text
-=============================================
-  WeAct-F411CE  spi-pipeline  store: SPI flash
-  32768 B -> 128 chunks -> 44032 B -> 32768 B
-=============================================
-spi-pipeline: image 32768 bytes at 0x08000000, source 32768, crc0 0x4c63e5da
+spi-pipeline: heap 16384 bytes
+spi-pipeline: SPI transport polled (bulk from 16 bytes)
+spi-pipeline: JEDEC 0xef 0x40 0x18 -> SPI flash store
+spi-pipeline: enc 348 KiB @ 0x00100000, dec 260 KiB @ 0x00157000 (8 iterations)
+spi-pipeline: enc 348 KiB @ 0x100000, dec 260 KiB @ 0x157000
+spi-pipeline: fs done
+spi-pipeline: image 32768 bytes at 0x08000000, source 32768, crc0 0x08f2dd12
 spi-pipeline: 128 chunks of 256 (last 256), 44032 encoded, 18 ms per chunk
-
-[   17807 ms] iter 0: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (5 fresh), 0 error(s), heap 16384 B
-[   21867 ms] iter 1: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (4 fresh), 0 error(s), heap 16384 B
-[   25927 ms] iter 2: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (4 fresh), 0 error(s), heap 16384 B
-[   29987 ms] iter 3: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (4 fresh), 0 error(s), heap 16384 B
-[   34047 ms] iter 4: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (4 fresh), 0 error(s), heap 16384 B
-[   38107 ms] iter 5: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (4 fresh), 0 error(s), heap 16384 B
-[   42167 ms] iter 6: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (4 fresh), 0 error(s), heap 16384 B
-[   42112 ms] iter 7: 128 chunks, enc 44032 B, dec 32768 B, crc 0x4c63e5da==0x4c63e5da, 5 cycles (4 fresh), 0 error(s), heap 16384 B
-
+[   17192 ms] iter 0: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
+[   20760 ms] iter 1: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
+[   24328 ms] iter 2: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
+[   27896 ms] iter 3: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
+[   31462 ms] iter 4: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
+[   35028 ms] iter 5: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
+[   38596 ms] iter 6: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
+[   42171 ms] iter 7: 128 chunks, enc 44032 B, dec 32768 B, crc 0x08f2dd12==0x08f2dd12, 5 cycles (4 fresh), 0 error(s), heap 16384 B
 spi-pipeline: enc partition, 354336 bytes used
-  enc0.b64 .. enc7.b64      44032 bytes each  crc 0x69524572
+  enc0.b64          44032 bytes  crc 0x59d38ba1
+  enc1.b64          44032 bytes  crc 0x59d38ba1
+  enc2.b64          44032 bytes  crc 0x59d38ba1
+  enc3.b64          44032 bytes  crc 0x59d38ba1
+  enc4.b64          44032 bytes  crc 0x59d38ba1
+  enc5.b64          44032 bytes  crc 0x59d38ba1
+  enc6.b64          44032 bytes  crc 0x59d38ba1
+  enc7.b64          44032 bytes  crc 0x59d38ba1
 spi-pipeline: dec partition, 264224 bytes used
-  dec0.bin .. dec7.bin      32768 bytes each  crc 0x4c63e5da
-
+  dec0.bin          32768 bytes  crc 0x08f2dd12
+  dec1.bin          32768 bytes  crc 0x08f2dd12
+  dec2.bin          32768 bytes  crc 0x08f2dd12
+  dec3.bin          32768 bytes  crc 0x08f2dd12
+  dec4.bin          32768 bytes  crc 0x08f2dd12
+  dec5.bin          32768 bytes  crc 0x08f2dd12
+  dec6.bin          32768 bytes  crc 0x08f2dd12
+  dec7.bin          32768 bytes  crc 0x08f2dd12
 pipe 1: 8 of 8 iterations wrote 128 chunks and saw the final one
 pipe 2: 8 of 8 produced 44032 encoded and 32768 decoded bytes
-pipe 3: 8 of 8 decoded back to crc0 0x4c63e5da
+pipe 3: 8 of 8 decoded back to crc0 0x08f2dd12
 pipe 4: 8 of 8 ran 5 blink cycles with snapshots that never shrank
 pipe 5: base64 matches the RFC 4648 vectors: true
 pipe 6: banner printed 4 lines at console-lock depth 2: true
-
-spi-pipeline             PASS  (45s)
+spi-pipeline: 8 of 8 iterations clean, heap 16384 bytes
+spi-pipeline: PASS
+RESULT: PASS
+Main thread stack: 2116/8188 bytes used
+Interrupts stack: 536/2048 bytes used
 ```
 
 ---
 
-## 6. Hardware Verification Test Matrix (9/9 PASS)
+## 6. Hardware Verification Test Matrix (10/10 PASS)
 
 Every test was flashed and verified on physical **WeAct Studio Black Pill (STM32F411CEU6)** hardware via OpenOCD and the WCH-Link CMSIS-DAP probe (`1a86:8011`).
 
@@ -479,12 +476,13 @@ Every test was flashed and verified on physical **WeAct Studio Black Pill (STM32
 |---|---|---|---|
 | **`smp-test0`** | **PASS** | 27s | Single-core Cortex-M4 scheduler bring-up, 40 beats on cpu0. |
 | **`smp-test1`** | **PASS** | 13s | Thread yield, termination, cooperative time-slicing: 12/12 passed. |
-| **`smp-mat-test`**| **PASS** | 12s | Floating-point matrix solver computation and verification (`max \|dx\| = 0`). |
+| **`smp-mat-test`**| **PASS** | 12s | Floating-point block solver, N = 64 on one CPU, against the classical solve (`max \|dx\| = 0`). |
 | **`sc-test-ko`** | **PASS** | 20s | Full single-core kernel objects validation: 127/127 checks passed. |
-| **`fp-switch`** | **PASS** | 20s | Hardware FPU context switch: 12,656 loops, 0 register corruption errors. |
+| **`fp-switch`** | **PASS** | 20s | Hardware FPU context switch: 2474 rounds, 0 bad, 0 migrated. |
 | **`mutex-stress`**| **PASS** | 43s | 10 threads, 30s contention: 2,410 locks, 0 overlaps, 0 starvation. |
-| **`rtos-apis`** | **PASS** | 20s | Full API validation suite: 127/127 checks passed, sys-heap 0 leaks. |
+| **`rtos-apis`** | **PASS** | 20s | The four parts (Zig API, C API `test-c-api.c`, `std.Io`, `uos.io.devices`): 127 checks, 0 failed. |
 | **`io-test`** | **PASS** | 14s | `std.Io` async runtime, cancellation, descriptors, RAM disk: 25/25 passed. |
+| **`cmsis-os-validator`** | **PASS** | 28s | The Arm CMSIS-RTOS v1 validator over the kernel's C layers: 60/60. |
 | **`spi-pipeline`**| **PASS** | 45s | 8-iteration dual-partition SPI Flash pipeline, Base64/CRC-32 clean. |
 
 ---

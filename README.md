@@ -11,7 +11,7 @@ also needs exactly one architecture port, a sibling repository:
 ```text
 micro-os-plu-iii-smp-zig-pr-github/
 ├── micro-os-plus-iii/              ← this repository (the kernel, module `uos`)
-├── micro-os-plus-iii-cortexm/      ← the Cortex-M port (Pico 2, WeAct F411, ...)
+├── micro-os-plus-iii-cortexm/      ← the Cortex-M port (Pico 2, Pico, WeAct F411)
 ├── micro-os-plus-iii-aarch32/      ← the ARMv7-A port (Luckfox Lyra B, 3× Cortex-A7)
 ├── micro-os-plus-iii-aarch64/      ← the ARMv8-A port (Raspberry Pi 4 B, 4× Cortex-A72)
 └── micro-os-plus-iii-posix-arch/   ← the synthetic POSIX port (GNU/Linux host)
@@ -102,13 +102,14 @@ zig build run -Dboard=pico2 -Dtest=smp-test2         # build one test, and run i
 bash test/hw.sh weactf411 zig-out/firmware/weactf411/rtos-apis.elf 120   # run an image
 ```
 
-`-Dboard` is `pico2`, `weactf411` (tested), `nucleof411`, `weactf412` or
-`pico` (built only); `-Dtest=<name>` builds that test only. The runner
+`-Dboard` is `pico2`, `pico` or `weactf411` (all tested on the boards);
+`nucleof411` and `weactf412` are declared but have no board file yet, so
+they do not build. `-Dtest=<name>` builds that test only. The runner
 programs the board with OpenOCD and follows the semihosting output until
 `RESULT: PASS` or `RESULT: FAIL`; the logs are in
 `zig-out/hw-logs/<board>/<test>.log`. The UART carries the same output, for
-a terminal. Reset the Pico 2 between tests (it keeps USB and SIO state
-across a debugger reset).
+a terminal. The Picos keep their USB state across a debugger reset: reset
+the board before `smp-test-usb-cdc-acm` when another test ran before it.
 
 ### On the Luckfox Lyra (the AArch32 port)
 
@@ -236,7 +237,8 @@ pub const clock_highres = struct { ... };    // see port_contract.zig
 pub const trace = struct { pub fn write(bytes: []const u8) void { ... } };
 
 // Optional: terminate(code), freeRam(), interruptStack(), stack_magic,
-// c_storage_words, a port Options struct (root `uos_port_options`).
+// c_storage_words, a port Options struct (root `uos_port_options`),
+// semihosting { call(op, arg), exit_by_block, attached() } for uos.semihosting.
 ```
 
 The two duties that matter most:

@@ -1,5 +1,15 @@
 # µOS++ IIIe on AArch32 & AArch64: Architectural Feasibility, SMP & AMP Design, and Porting Guide
 
+> **Status (2026-10-16).** This is the feasibility study written on 2026-10-14, before the A-profile ports existed. Both have been built since and pass their tests on hardware: `micro-os-plus-iii-aarch32` (Luckfox Lyra B, RK3506, 3× Cortex-A7) and `micro-os-plus-iii-aarch64` (Raspberry Pi 4 B, BCM2711, 4× Cortex-A72). Their own documents describe what was built: `micro-os-plus-iii-aarch32/docs/aarch32-port-architecture-and-internals.md` and `micro-os-plus-iii-aarch64/docs/rpi4b-aarch64-smp-port-architecture-and-internals.md`. Where the ports differ from the sketches below, the ports are right:
+>
+> - **Thread mode**: threads run privileged, at EL1h on AArch64 and in SVC mode on AArch32; not at EL0 / User mode.
+> - **Frames**: a switch saves the whole register file, not only the callee-saved registers: 800 bytes on AArch64 (x0–x30, SPSR, ELR, FPSR, FPCR, q0–q31), 328 bytes on AArch32 (d0–d31, FPSCR, CPSR, PC, r0–r12, LR). Cooperative and preemptive switches build the same frame.
+> - **Publication**: the outgoing stack pointer is published only after the stack pointer has left the outgoing stack (the per-CPU `_smp_pub_addr` / `_smp_pub_val` slots, stored by the assembly after `mov sp`). The `str sp, [x0]` before the switch in the listings of 3.2 and 4.2 is exactly the race the ports avoid: another CPU could resume the thread on a stack still in use.
+> - **Tick and IPI**: each CPU's generic **physical** timer (CNTP, PPI 30 on the Pi 4, 29/30 on the Lyra), not CNTV; CPU 0 alone drives the clocks. The IPI is a GIC-400 (GICv2) SGI through GICD_SGIR on both boards.
+> - **Kernel lock**: a recursive spin lock with a per-CPU owner, taken with the IRQs masked (LDAXR/STLXR on AArch64, LDREX/STREX on AArch32).
+> - **Boards**: the Raspberry Pi 4 B and the Luckfox Lyra B; the Pi 3B, Pi Zero 2 W and QEMU `virt` suggested here are not ported.
+> - **File layout**: the vectors are in each board's `startup.S`; the context switch is there too on AArch64, and in naked functions of `src/port.zig` on AArch32; then `src/port.zig`, `src/arch.zig`, `src/gic.zig`, `src/mmu.zig` (AArch64), `boards/<board>/` and `test/<test>/`; there is no `src/context.zig` or `src/startup.S`.
+
 ---
 
 ## 1. Executive Summary & Problem Formulation
@@ -43,7 +53,7 @@ The fundamental reason the Zig port seamlessly scales from dual Cortex-M33 micro
 ```
 
 ### 2.1 The Word Size & Machine Context Abstraction
-In [`micro-os-plus-iii/src/port_contract.zig`](file:///home/dan/Desktop/micro-os-plu-iii-smp-zig-pr-github-agy/micro-os-plus-iii/src/port_contract.zig), the machine context is completely parameterized:
+In `micro-os-plus-iii/src/port_contract.zig`, the machine context is completely parameterized:
 
 ```zig
 pub const StackElement = if (is_64bit) u64 else u32;
