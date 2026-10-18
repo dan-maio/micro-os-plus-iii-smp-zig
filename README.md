@@ -44,9 +44,14 @@ resumes it, then follows the semihosting output until `RESULT: PASS`,
 `zig-out/hw-logs/luckfox-lyra/<test>.log`. The UART is not touched: it
 carries the same console, for a terminal.
 
-**Power-cycle the Lyra between tests.** A test that released CPUs 1 and 2
-(or the Cortex-M0) leaves them running, and a debugger load cannot put them
-back in the BootROM.
+**No power cycle is needed between tests.** A test that released CPUs 1
+and 2 (or the Cortex-M0) leaves them running, and a debugger load cannot put
+them back in the BootROM, so `test/hw.sh` first cold-resets the SoC:
+`rk3506_reset_reconnect` (`boards/luckfox-lyra/openocd.cfg`) writes the
+global soft-reset magic 0xFDB9 to CRU GLB_SRST_FST (0xFF9A0C08,
+glb_srstn_1), waits 4 s for the bootloader, then re-attaches the DAP and
+halts core 0. The SWD errors the reset prints are expected. `RESET_MS=<n>`
+changes the wait; `NO_RESET=1` skips the reset (then power-cycle by hand).
 
 The WCH-Link can drop the connection under heavy semihosting traffic
 ("CMSIS-DAP command mismatch"); most runs lose it only after the verdict,
