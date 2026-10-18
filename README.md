@@ -46,12 +46,13 @@ carries the same console, for a terminal.
 
 **No power cycle is needed between tests.** A test that released CPUs 1
 and 2 (or the Cortex-M0) leaves them running, and a debugger load cannot put
-them back in the BootROM, so `test/hw.sh` first cold-resets the SoC:
-`rk3506_reset_reconnect` (`boards/luckfox-lyra/openocd.cfg`) writes the
-global soft-reset magic 0xFDB9 to CRU GLB_SRST_FST (0xFF9A0C08,
-glb_srstn_1), waits 4 s for the bootloader, then re-attaches the DAP and
-halts core 0. The SWD errors the reset prints are expected. `RESET_MS=<n>`
-changes the wait; `NO_RESET=1` skips the reset (then power-cycle by hand).
+them back in the BootROM, so `test/hw.sh` first runs a separate OpenOCD
+session that calls `rk3506_reset_full` (`boards/luckfox-lyra/openocd.cfg`):
+a physical write of the global soft-reset magic 0xFDB9 to CRU GLB_SRST_FST
+(0xFF9A0C08, glb_srstn_1). It then waits 3 s for the board to boot and
+attaches as after a power cycle. The reset's SWD errors are expected and go
+to `<test>.reset.log`. `RESET_WAIT=<s>` changes the wait; `NO_RESET=1`
+skips the reset (then power-cycle by hand).
 
 The WCH-Link can drop the connection under heavy semihosting traffic
 ("CMSIS-DAP command mismatch"); most runs lose it only after the verdict,

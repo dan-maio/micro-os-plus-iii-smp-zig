@@ -19,14 +19,15 @@
 # UART) until "RESULT: PASS", "RESULT: FAIL" or "FATAL:"; the log is
 # zig-out/hw-logs/<board>/<test>.log. The UART is not touched.
 #
-# Every run first cold-resets the SoC (rk3506_reset_reconnect in the board
-# config: CRU glb_srstn_1, then the DAP and core 0 are re-attached), so CPUs
-# 1 and 2 are back in the BootROM and no power cycle is needed between
-# tests.
+# Every run is preceded by the RK3506 full global reset, in its own OpenOCD
+# session (rk3506_reset_full in the board config: CRU glb_srstn_1), then 3 s
+# for the board to boot: CPUs 1 and 2 are back in the BootROM and no power
+# cycle is needed between tests. The reset's SWD errors go to
+# <test>.reset.log, not to the run's log.
 #
 # Env: OPENOCD=<path>  a specific OpenOCD; ADAPTER_KHZ=<n>  SWD clock;
-#      RESET_MS=<n>  wait after the reset before re-attaching (default 4000);
-#      NO_RESET=1  skip the reset (attach to the running board, as before)
+#      RESET_WAIT=<s>  wait after the reset (default 3);
+#      NO_RESET=1  skip the reset (power-cycle by hand)
 # -----------------------------------------------------------------------------
 set -uo pipefail
 
@@ -68,19 +69,21 @@ LOG="$LOGS/$NAME.log"
 RUN_CFG="$LOGS/$NAME.cfg"
 rm -f "$LOG"
 
+if [[ -z "${NO_RESET:-}" ]]; then
+  RESET_LOG="$LOGS/$NAME.reset.log"
+  echo "== $BOARD : full global reset (glb_srstn_1) =="
+  "$OCD" "${SCRIPTS_ARG[@]}" -s "$(dirname "$CFG")" -f "$CFG" \
+    -c "catch { rk3506_reset_full }; shutdown" > "$RESET_LOG" 2>&1 || true
+  if ! grep -q 'Triggering RK3506 Full Global Software Reset' "$RESET_LOG"; then
+    echo "hw.sh: the reset session never reached the board (see $RESET_LOG)" >&2
+    exit 7
+  fi
+  sleep "${RESET_WAIT:-3}"
+fi
+
 cat > "$RUN_CFG" <<EOF
 ${ADAPTER_KHZ:+adapter speed $ADAPTER_KHZ
-}${RESET_MS:+set _reset_settle_ms $RESET_MS
-}
-EOF
-if [[ -z "${NO_RESET:-}" ]]; then
-  cat >> "$RUN_CFG" <<EOF
-echo "--- stage: cold reset + re-attach ---"
-rk3506_reset_reconnect
-EOF
-fi
-cat >> "$RUN_CFG" <<EOF
-echo "--- stage: halt core 0 ---"
+}echo "--- stage: halt core 0 ---"
 targets $TARGET
 halt
 arm semihosting enable
@@ -108,10 +111,7 @@ while (( waited < SECS )); do
   if grep -q 'RESULT: PASS' "$LOG" 2>/dev/null; then rc=0; break; fi
   if grep -qE 'RESULT: FAIL|FATAL:' "$LOG" 2>/dev/null; then rc=1; break; fi
   if ! kill -0 "$OCD_PID" 2>/dev/null; then rc=4; break; fi
-  # The cold reset drops the SWD link on purpose: only a loss after it
-  # (from the halt stage on) counts.
-  if sed -n '/--- stage: halt core 0 ---/,$p' "$LOG" 2>/dev/null |
-      grep -qE 'Invalid ACK|Polling failed|Examination failed'; then rc=6; break; fi
+  if grep -qE 'Invalid ACK|Polling failed|Examination failed' "$LOG" 2>/dev/null; then rc=6; break; fi
   sleep 1; waited=$((waited + 1))
 done
 
