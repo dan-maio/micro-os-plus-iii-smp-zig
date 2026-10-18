@@ -19,10 +19,14 @@
 # UART) until "RESULT: PASS", "RESULT: FAIL" or "FATAL:"; the log is
 # zig-out/hw-logs/<board>/<test>.log. The UART is not touched.
 #
-# One test per power cycle: the RK3506 keeps CPUs 1 and 2 running once
-# released, and a debugger hot load cannot put them back in the BootROM.
+# Every run first cold-resets the SoC (rk3506_reset_reconnect in the board
+# config: CRU glb_srstn_1, then the DAP and core 0 are re-attached), so CPUs
+# 1 and 2 are back in the BootROM and no power cycle is needed between
+# tests.
 #
-# Env: OPENOCD=<path>  a specific OpenOCD; ADAPTER_KHZ=<n>  SWD clock
+# Env: OPENOCD=<path>  a specific OpenOCD; ADAPTER_KHZ=<n>  SWD clock;
+#      RESET_MS=<n>  wait after the reset before re-attaching (default 4000);
+#      NO_RESET=1  skip the reset (attach to the running board, as before)
 # -----------------------------------------------------------------------------
 set -uo pipefail
 
@@ -66,7 +70,17 @@ rm -f "$LOG"
 
 cat > "$RUN_CFG" <<EOF
 ${ADAPTER_KHZ:+adapter speed $ADAPTER_KHZ
-}echo "--- stage: halt core 0 ---"
+}${RESET_MS:+set _reset_settle_ms $RESET_MS
+}
+EOF
+if [[ -z "${NO_RESET:-}" ]]; then
+  cat >> "$RUN_CFG" <<EOF
+echo "--- stage: cold reset + re-attach ---"
+rk3506_reset_reconnect
+EOF
+fi
+cat >> "$RUN_CFG" <<EOF
+echo "--- stage: halt core 0 ---"
 targets $TARGET
 halt
 arm semihosting enable
@@ -94,7 +108,10 @@ while (( waited < SECS )); do
   if grep -q 'RESULT: PASS' "$LOG" 2>/dev/null; then rc=0; break; fi
   if grep -qE 'RESULT: FAIL|FATAL:' "$LOG" 2>/dev/null; then rc=1; break; fi
   if ! kill -0 "$OCD_PID" 2>/dev/null; then rc=4; break; fi
-  if grep -qE 'Invalid ACK|Polling failed|Examination failed' "$LOG" 2>/dev/null; then rc=6; break; fi
+  # The cold reset drops the SWD link on purpose: only a loss after it
+  # (from the halt stage on) counts.
+  if sed -n '/--- stage: halt core 0 ---/,$p' "$LOG" 2>/dev/null |
+      grep -qE 'Invalid ACK|Polling failed|Examination failed'; then rc=6; break; fi
   sleep 1; waited=$((waited + 1))
 done
 
