@@ -1,0 +1,39 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # The kernel repository, checked out as a sibling so that build.zig.zon's
+  # "../micro-os-plus-iii" path dependency resolves. Adjust to your fork.
+  KERNEL_REPO: YOUR_ORG/micro-os-plus-iii-zig
+
+jobs:
+  build:
+    name: build and run (posix)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this port
+        uses: actions/checkout@v4
+        with:
+          path: micro-os-plus-iii-posix-arch
+
+      - name: Checkout the kernel (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KERNEL_REPO }}
+          path: micro-os-plus-iii
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      # This is the one port that can actually run its tests in CI: µOS++
+      # runs as a GNU/Linux process. run-all.sh builds, runs every test with
+      # a 300 s timeout each, and fails the job if any test fails.
+      - name: Build and run every test on the host
+        working-directory: micro-os-plus-iii-posix-arch
+        run: test/run-all.sh
