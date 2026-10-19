@@ -35,10 +35,11 @@
 24. [Writing device drivers (UART, SPI, I2C, ADC, DMA)](#writing-device-drivers-uart-spi-i2c-adc-dma)
 25. [Interfacing with C](#interfacing-with-c)
 26. [Linker scripts and the memory map](#linker-scripts-and-the-memory-map)
-27. [Adding a new board](#adding-a-new-board)
-28. [Adding a new architecture port](#adding-a-new-architecture-port)
-29. [The main parts in code: boot, threads, scheduler, context switch, interrupts](#the-main-parts-in-code-boot-threads-scheduler-context-switch-interrupts)
-30. [API quick reference](#api-quick-reference)
+27. [The build system: `build.zig` and `build.zig.zon`](#the-build-system-build.zig-and-build.zig.zon)
+28. [Adding a new board](#adding-a-new-board)
+29. [Adding a new architecture port](#adding-a-new-architecture-port)
+30. [The main parts in code: boot, threads, scheduler, context switch, interrupts](#the-main-parts-in-code-boot-threads-scheduler-context-switch-interrupts)
+31. [API quick reference](#api-quick-reference)
 
 ---
 
@@ -65,7 +66,7 @@ micro-os-plu-iii-smp-zig-pr-github/
 The kernel and the port import each other: the kernel provides the scheduler,
 the threads, the lists and all the synchronisation objects; the port provides
 the machine context, the interrupt masking, the context switch and the clocks.
-A compile-time contract (see [§28](#adding-a-new-architecture-port)) checks
+A compile-time contract (see [§29](#adding-a-new-architecture-port)) checks
 that a port declares everything the kernel needs.
 
 **Why use it.** µOS++ IIIe gives you real-time threads, deterministic
@@ -152,7 +153,7 @@ zig build run -Dboard=pico2 -Dtest=smp-test2   # build one test and run it on th
 ```
 
 For a standalone application, use the port's `addFirmware()` helper (see
-[§27](#adding-a-new-board)) or assemble the module wiring yourself with the
+[§28](#adding-a-new-board)) or assemble the module wiring yourself with the
 kernel's build helpers `uos_build.createModule()` and `uos_build.linkPort()`.
 
 ### Running on the host
@@ -1237,7 +1238,7 @@ fn BufferedUsart(comptime cfg: UsartConfig, comptime irq_number: u32, comptime r
 ```
 
 The board installs `irq` as the USART's handler by declaring it in
-`board.interrupts` (see [§27](#adding-a-new-board)); the port merges that struct
+`board.interrupts` (see [§28](#adding-a-new-board)); the port merges that struct
 into the MicroZig interrupt vector table. The receive side is the same shape,
 feeding `uos.io.devices.RingBuffer` from the interrupt and letting a thread
 block on the device.
@@ -1591,7 +1592,368 @@ and any extra sections, and the generator composes the rest.
 
 ---
 
-## 27. Adding a new board
+## 27. The build system: `build.zig` and `build.zig.zon`
+
+Every module builds with two files in its root: **`build.zig.zon`**, the
+*package manifest* (who am I, what do I depend on), and **`build.zig`**, the
+*build logic* (what should `zig build` do). Zig's build system reads the
+manifest to resolve dependencies, then runs the `build()` function to produce
+the build graph. This chapter walks both, with the real files of this tree.
+
+### 27.1 The package manifest: `build.zig.zon`
+
+The manifest declares the package's identity and its dependencies. The kernel's
+is the smallest possible — it has no dependencies of its own:
+
+```zig
+.{
+    .name = .micro_os_plus_iii,        // the package name (an enum literal)
+    .fingerprint = 0x51fb917b8782169d, // a unique hash of the package contents
+    .version = "7.0.0",               // semantic version
+    .minimum_zig_version = "0.17.0",  // the Zig release required to build it
+    .dependencies = .{},              // this package depends on nothing
+    .paths = .{ "build.zig", "build.zig.zon", "src", "include", "tests", "LICENSE", "README.md" },
+}
+```
+
+The fields, in plain terms:
+
+- **`.name`** — an enum literal (note the leading dot). This is the name other
+  packages use in *their* `dependencies`, and the name you `@import` in
+  `build.zig` (e.g. `@import("micro_os_plus_iii")`).
+- **`.fingerprint`** — a hash that uniquely identifies this exact package. Zig
+  computes it; after you edit the manifest or the `paths`, run `zig build` once
+  and Zig will tell you the correct value to paste.
+- **`.version`** — a SemVer string. Here every module is `7.0.0`, mirroring the
+  µOS++ version.
+- **`.minimum_zig_version`** — the oldest Zig that can build the package. All
+  modules pin `0.17.0`.
+- **`.dependencies`** — the packages this one needs. Each entry is either a
+  `.path` (a local sibling) or a `.url` (a tarball/git archive).
+- **`.paths`** — the files and folders that ship when this package is used as a
+  dependency. Everything not listed is left out of the package (but is still in
+  git). Note `.github` is deliberately absent here.
+
+A port depends on the kernel by *path*, because in this project the five
+repositories are checked out side by side:
+
+```zig
+.{
+    .name = .micro_os_plus_iii_aarch32,
+    .fingerprint = 0x15171f28925b6874,
+    .version = "7.0.0",
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        // The portable kernel, the sibling repository.
+        .micro_os_plus_iii = .{ .path = "../micro-os-plus-iii" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "boards", "test", "LICENSE", "README.md" },
+}
+```
+
+The `.path = "../micro-os-plus-iii"` is resolved relative to *this* folder, so
+the five repos must stay side by side (that is also why the CI workflows check
+the kernel out as a sibling — see [§26](#linker-scripts-and-the-memory-map)'s
+sibling note). The Cortex-M port adds a second dependency, on MicroZig:
+
+```zig
+.dependencies = .{
+    .micro_os_plus_iii = .{ .path = "../micro-os-plus-iii" },
+    .microzig = .{ .path = "../../../Downloads/MicroZIG-0.17.18/microzig" },
+},
+```
+
+That MicroZig path is a local-machine path, which is why the CI workflow for
+that port clones MicroZig to the exact same relative location.
+
+### 27.2 The build script: `build.zig`
+
+`build.zig` exports a `build()` function that receives a `*std.Build` and wires
+up the build graph — steps, options, modules and compile artifacts. The kernel's
+is short because it never produces a firmware on its own; it only publishes
+**helper functions** that the ports call, plus one `test` step:
+
+```zig
+const std = @import("std");
+
+pub const ModuleOptions = struct {
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    /// The architecture port module (uos_port); linkPort() wires it to the kernel.
+    port: ?*std.Build.Module = null,
+};
+
+/// A fresh `uos` kernel module rooted in src/uos.zig. A fresh module per
+/// firmware, because the port it imports differs per board.
+pub fn createModule(b: *std.Build, dep: *std.Build.Dependency, options: ModuleOptions) *std.Build.Module {
+    const mod = b.createModule(.{
+        .root_source_file = dep.path("src/uos.zig"),
+        .target = options.target,
+        .optimize = options.optimize,
+    });
+    if (options.port) |port| linkPort(mod, port);
+    return mod;
+}
+
+/// The kernel and the port import each other; this closes the cycle.
+pub fn linkPort(uos: *std.Build.Module, port: *std.Build.Module) void {
+    uos.addImport("uos_port", port);
+    port.addImport("uos", uos);
+}
+
+/// The shared on-target test suites, for a port's test applications.
+pub fn createSuitesModule(b: *std.Build, dep: *std.Build.Dependency, uos: *std.Build.Module) *std.Build.Module {
+    const mod = b.createModule(.{ .root_source_file = dep.path("tests/suites.zig") });
+    mod.addImport("uos", uos);
+    return mod;
+}
+
+/// Add the µOS++ C API headers (and, for freestanding targets, the C runtime)
+/// to a module, so its C sources can call the kernel.
+pub fn addCIncludes(dep: *std.Build.Dependency, mod: *std.Build.Module, freestanding: bool) void {
+    mod.addIncludePath(dep.path("include"));
+    if (freestanding) mod.addIncludePath(dep.path("include/c"));
+}
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+    const test_step = b.step("test", "Run the host unit tests");
+    // ... a test artifact over src/host_tests.zig, wired to run ...
+    test_step.dependOn(&run_tests.step);
+}
+```
+
+Four ideas carry the whole design:
+
+- **A module is a unit of compilation** (`std.Build.Module`): a root source
+  file plus a target, an optimize mode and a table of named imports. `@import`
+  inside Zig resolves through that import table.
+- **The kernel module is created per firmware** (`createModule`), because the
+  port it imports differs per board. There is no single "the kernel module".
+- **The kernel↔port cycle is closed explicitly** (`linkPort`): the kernel
+  imports `uos_port`, the port imports `uos` back.
+- **Options** (`b.option`) become `-Dname=value` command-line flags, so one
+  `build.zig` can drive many boards/tests.
+
+### 27.3 How a port builds firmware: `addFirmware()`
+
+The AArch32/AArch64 ports show the full recipe in their public `addFirmware()`.
+It builds, in order, the four modules a firmware needs — **board**, **port**,
+**kernel** and **application** — then links them with a board startup and
+linker script:
+
+```zig
+const uos_build = @import("micro_os_plus_iii");
+
+pub fn addFirmware(b: *std.Build, kernel_dep: *std.Build.Dependency, options: FirmwareOptions) *std.Build.Step.Compile {
+    const board_dir = b.fmt("boards/{s}", .{@tagName(options.board)});
+
+    // 1. The board driver (LED, UART, clocks...).
+    const board_mod = b.createModule(.{ .root_source_file = b.path(b.fmt("{s}/board.zig", .{board_dir})) });
+
+    // 2. The port (context switch, interrupts, scheduler), importing the board.
+    const port_mod = b.createModule(.{ .root_source_file = b.path("src/port.zig") });
+    port_mod.addImport("uos_board", board_mod);
+
+    // 3. The kernel, wired to the port.
+    const uos_mod = uos_build.createModule(b, kernel_dep, .{
+        .target = options.target, .optimize = options.optimize, .port = port_mod,
+    });
+
+    // 4. The application, importing the kernel, the suites and the test board.
+    const app_mod = b.createModule(.{
+        .root_source_file = options.app_source_file,
+        .imports = &.{
+            .{ .name = "uos",        .module = uos_mod },
+            .{ .name = "uos_suites", .module = uos_build.createSuitesModule(b, kernel_dep, uos_mod) },
+            .{ .name = "board",      .module = test_board_mod },
+        },
+    });
+
+    // The image root: the entry that calls main(), plus the startup vectors.
+    const root_mod = b.createModule(.{
+        .root_source_file = b.path("test/start.zig"),
+        .target = options.target, .optimize = options.optimize,
+        .single_threaded = false,            // several CPUs share memory
+        .imports = &.{ .{ .name = "uos", .module = uos_mod }, .{ .name = "app", .module = app_mod } },
+    });
+    root_mod.addAssemblyFile(b.path(b.fmt("{s}/startup.S", .{board_dir})));
+
+    const exe = b.addExecutable(.{ .name = options.name, .root_module = root_mod });
+    exe.setLinkerScript(b.path(b.fmt("{s}/linker.ld", .{board_dir})));
+    exe.entry = .{ .symbol_name = "_start" };
+    return exe;
+}
+```
+
+The interesting pieces:
+
+- **The cross-compile target** is built once and passed in (the `build()`
+  function resolves it, see below); the port's `cpu` field selects the exact
+  CPU model.
+- **`addAssemblyFile`** compiles the board's `startup.S` (the reset vector and
+  first-boot code), and **`setLinkerScript` + `entry = _start`** point the
+  linker at the board's `linker.ld` and the entry symbol. This is the
+  no-MicroZig path — the A-profile ports own their vectors and memory map
+  ([§26](#linker-scripts-and-the-memory-map)).
+- **`.single_threaded = false`** matters on SMP: it tells Zig that atomics and
+  fences must be real, because more than one core shares memory.
+- The test application imports the kernel as `uos`, the shared suites as
+  `uos_suites`, and the test board as `board` — the same three names every
+  test `main.zig` expects.
+
+The `build()` entry point then loops over the test list, builds each image and
+installs it, and adds a `run` step only when `-Dtest` names a single test:
+
+```zig
+pub fn build(b: *std.Build) void {
+    const optimize = b.option(std.lang.Optimize, "optimize", "Optimisation mode (default safe)") orelse .safe;
+    const board_id = b.option(BoardId, "board", "The board") orelse .@"luckfox-lyra";
+    const only_test = b.option([]const u8, "test", "Build (and run) only this test");
+
+    const kernel_dep = b.dependency("micro_os_plus_iii", .{});
+    // ... pick the board, resolve the target ...
+
+    const run_step = b.step("run", "Load and run the test selected with -Dtest");
+
+    for (tests) |t| {
+        if (only_test) |name| if (!std.mem.eql(u8, name, t.name)) continue;
+
+        const exe = addFirmware(b, kernel_dep, .{ .name = t.name, ... });
+        const install = b.addInstallArtifact(exe, .{
+            .dest_dir = .{ .override = .{ .custom = b.fmt("firmware/{s}", .{@tagName(board_id)}) } },
+            .dest_sub_path = b.fmt("{s}.elf", .{t.name}),
+        });
+        b.getInstallStep().dependOn(&install.step);
+
+        if (only_test != null) {
+            const run = b.addSystemCommand(&.{ "bash", "test/hw.sh", @tagName(board_id) });
+            run.addFileArg(exe.getEmittedBin());
+            run.has_side_effects = true;
+            run_step.dependOn(&run.step);
+        }
+    }
+}
+```
+
+`b.dependency("micro_os_plus_iii", .{})` is how `build.zig` resolves the
+`.path` declared in `build.zig.zon`; `b.option(...)` is how `-Dboard=...` /
+`-Dtest=...` become typed values. `b.addInstallArtifact` copies the ELF into
+`zig-out/firmware/<board>/`, and `b.addSystemCommand` shells out to the
+OpenOCD runner when you ask to `run`.
+
+### 27.4 Cross-compiling: `resolveTargetQuery()`
+
+The A-profile ports do not use MicroZig; they describe the target CPU directly
+and let Zig's own LLVM/LLD cross-compile:
+
+```zig
+// AArch32 (Luckfox Lyra, 3x Cortex-A7):
+const target = b.resolveTargetQuery(.{
+    .cpu_arch = .arm,
+    .os_tag = .freestanding,
+    .abi = .eabihf,
+    .cpu_model = .{ .explicit = &std.Target.arm.cpu.cortex_a7 },
+});
+
+// AArch64 (Raspberry Pi 4 B, 4x Cortex-A72):
+const target = b.resolveTargetQuery(.{
+    .cpu_arch = .aarch64,
+    .os_tag = .freestanding,
+    .abi = .none,
+    .cpu_model = .{ .explicit = &std.Target.aarch64.cpu.cortex_a72 },
+});
+```
+
+`os_tag = .freestanding` means "no operating system", so no libc is linked and
+the kernel provides what C code needs. The board table just carries the CPU
+model, so adding a board is largely picking a `cpu_model`.
+
+### 27.5 The Cortex-M port and MicroZig
+
+The Cortex-M port delegates the target and the startup to **MicroZig**: a board
+is a MicroZig target, and the chip/board already know their memory regions and
+vector table. The port's `build.zig` maps each `-Dboard=` id to a MicroZig
+target:
+
+```zig
+pub const BoardId = enum { weactf411, nucleof411, weactf412, pico, pico2, @"pico2-rp2350b-psram" };
+
+pub const boards = [_]Board{
+    .{ .id = .weactf411, .source = "src/boards/weactf411.zig", .ncpu = 1 },
+    .{ .id = .pico2,     .source = "src/boards/pico2.zig",     .ncpu = 2 },
+    // ...
+};
+
+fn boardTarget(mb: *MicroBuild, id: BoardId) *const microzig.Target {
+    return switch (id) {
+        .weactf411 => mb.ports.stm32.chips.STM32F411CE,
+        .pico2     => mb.ports.rp2xxx.boards.raspberrypi.pico2_arm,
+        // ...
+    };
+}
+```
+
+Its `addFirmware()` then asks MicroZig for a firmware with that target, and
+wires the same three modules (board, port, kernel) into it; `ncpu` drives
+`.single_threaded`. The rest (the vector table, the boot, the linker script) is
+MicroZig's job — which is why this port needs the MicroZig dependency but no
+`startup.S` or `linker.ld` of its own.
+
+### 27.6 The POSIX port: translate-c and running on the host
+
+The POSIX port builds a *host* executable, so it links the real libc and uses
+**`translate-c`** to import the host's own glibc declarations (for the
+ucontexts and signals the port is built on):
+
+```zig
+const host_c = b.addTranslateC(.{
+    .root_source_file = b.path("src/host.h"),
+    .target = target,
+    .optimize = optimize,
+    .link_libc = true,     // a hosted target: use the real libc
+});
+const host_c_mod = host_c.createModule();
+```
+
+`addApplication()` is the same module graph as `addFirmware()` but without a
+linker script or entry point (the host's C runtime provides `_start`), and the
+`run` step is just `b.addRunArtifact(exe)` instead of an OpenOCD command:
+
+```zig
+if (only_test != null) {
+    const run = b.addRunArtifact(exe);   // run the test as a normal process
+    run_step.dependOn(&run.step);
+}
+```
+
+That is why this port is the one CI can actually *run* ([§26](#linker-scripts-and-the-memory-map)'s
+sibling note notwithstanding): every test is an ordinary Linux binary whose
+exit code is its verdict.
+
+### 27.7 The whole picture
+
+The module graph of a firmware build, in one line:
+
+```text
+app (test/<name>/main.zig) ── imports ──> uos (the kernel)
+                                          │  uos_port  <── port (src/port.zig)
+                                          │                 │ uos_board
+                                          │                 └── board (boards/<b>/board.zig)
+                                          └─ uos_suites (shared test suites)
+```
+
+`build.zig.zon` says *where the kernel is*; `build.zig` says *how to combine
+it* with a port, a board and an application into an image — a freestanding ELF
+for the bare-metal ports, a host binary for the POSIX port. The three helpers
+in the kernel's `build.zig` (`createModule`, `linkPort`, `addCIncludes`) are
+the shared glue every port reuses, which is what keeps the ports small and
+consistent.
+
+---
+
+## 28. Adding a new board
 
 A **board** is a build configuration of one architecture port, not a new
 repository. Adding a board to the Cortex-M port (the common case) is a matter of
@@ -1701,7 +2063,7 @@ to their own targets and boot sequences.
 
 ---
 
-## 28. Adding a new architecture port
+## 29. Adding a new architecture port
 
 An **architecture port** is a separate repository (`micro-os-plus-iii-<arch>`)
 that provides one Zig module imported by the kernel as `uos_port`. The kernel
@@ -1775,13 +2137,13 @@ starting its tick and requesting its first switch. The four ports in this tree
 
 ---
 
-## 29. The main parts in code: boot, threads, scheduler, context switch, interrupts
+## 30. The main parts in code: boot, threads, scheduler, context switch, interrupts
 
 The API sections above tell you *what to call*; this section shows *how the
 kernel actually does it*, with the real code of this tree (the Cortex-M port
 for the machine-specific parts). It is the "under the hood" companion, and the
 context-switch and interrupt parts are exactly what a port author must
-reproduce ([§28](#adding-a-new-architecture-port)).
+reproduce ([§29](#adding-a-new-architecture-port)).
 
 ### 29.1 Boot: from reset to the first thread
 
@@ -1998,7 +2360,7 @@ pub fn reschedule() void {
 ```
 
 Because PendSV runs at the lowest priority, the actual switch waits until any
-interrupt handler has finished — the mechanism behind [§29.5](#the-main-parts-in-code-boot-threads-scheduler-context-switch-interrupts).
+interrupt handler has finished — the mechanism behind [§30.5](#the-main-parts-in-code-boot-threads-scheduler-context-switch-interrupts).
 
 ### 29.4 The context switch: PendSV and stack swapping
 
@@ -2026,7 +2388,7 @@ bx lr                    ; exception return into the incoming thread
 ```
 
 The `r4-r11, lr` block is exactly the `Frame` that `contextCreate()` built in
-[§29.2](#the-main-parts-in-code-boot-threads-scheduler-context-switch-interrupts) —
+[§30.2](#the-main-parts-in-code-boot-threads-scheduler-context-switch-interrupts) —
 save and restore are the same shape.
 
 The C-callable middle, `uos_port_switch_stacks()`, is where the kernel takes
@@ -2117,7 +2479,7 @@ sequence is race-free:
 The ISR wakes thread B with `semaphore.post()` (which is ISR-safe and internally
 wraps its list changes in an interrupt critical section), and the *actual*
 register save/restore happens afterwards, in PendSV, exactly as in
-[§29.4](#the-main-parts-in-code-boot-threads-scheduler-context-switch-interrupts).
+[§30.4](#the-main-parts-in-code-boot-threads-scheduler-context-switch-interrupts).
 
 **Critical sections in ISR context.** On a single CPU an interrupt critical
 section just masks interrupts; on SMP it also takes the kernel lock, so the
@@ -2128,7 +2490,7 @@ calls assert it.
 
 ---
 
-## 30. API quick reference
+## 31. API quick reference
 
 ### Namespaces
 
