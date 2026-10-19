@@ -1,0 +1,24 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: host unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      # The kernel is the portable part and has no dependencies: its host
+      # unit tests (lists, flags, allocators, C storage sizes) run with the
+      # host Zig compiler.
+      - name: Build and run the host unit tests
+        run: zig build test --summary all
