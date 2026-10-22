@@ -94,6 +94,8 @@ const tests = [_]Test{
     // four-CPU version, each its own test.
     .{ .name = "tutor-01-bring-up-1cpu", .dir = "tutor/01-bring-up/1cpu", .tutor = true },
     .{ .name = "tutor-01-bring-up-4cpu", .dir = "tutor/01-bring-up/4cpu", .tutor = true },
+    .{ .name = "tutor-02-threads-1cpu", .dir = "tutor/02-threads/1cpu", .tutor = true },
+    .{ .name = "tutor-02-threads-4cpu", .dir = "tutor/02-threads/4cpu", .tutor = true },
 };
 
 pub fn build(b: *std.Build) void {

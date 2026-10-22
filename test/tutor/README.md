@@ -1,6 +1,6 @@
 # µOS++ IIIe tutorial (Zig) — the RTOS one step at a time (Raspberry Pi 4 B)
 
-Status: **in progress** (2026-10-22). Lesson 01 is done; the plan below
+Status: **in progress** (2026-10-22). Lessons 01 (bring-up) and 02 (threads) are done; the plan below
 covers every lesson. This is the Zig version of the course written for the
 C++ kernel (golden workspace, `micro-os-plus-iii-aarch64/test/rpi4b/tutor/`):
 the same idea, the same base, the same lessons and the same data — a lesson
