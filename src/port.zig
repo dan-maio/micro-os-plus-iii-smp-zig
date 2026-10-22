@@ -305,11 +305,19 @@ var tick_base_set: bool = false;
 // one period from now, which would add the interrupt's latency to every tick
 // and make the kernel's clocks lose time). A late tick is caught up: the
 // compare is already due and the interrupt fires again. Far behind (a core
-// halted by the debugger), resynchronise rather than replay the ticks.
+// halted by the debugger, or by a slow semihosting call: the counter keeps
+// running), resynchronise rather than replay the ticks; the ticks skipped on
+// core 0 are kernel time that never happened, so hrclock's origin moves with
+// them, or hrclock.now() would stay that far ahead of its steady count.
 fn rearmTick() void {
-    var next = arch.cntpCval() + timer_period_cycles;
+    const period: u64 = timer_period_cycles;
+    var next = arch.cntpCval() + period;
     const now = arch.cntPct();
-    if (now > next + 1000 * @as(u64, timer_period_cycles)) next = now + timer_period_cycles;
+    if (now > next + 1000 * period) {
+        const skipped = (now + period - next) / period;
+        next += skipped * period;
+        if (arch.cpuId() == 0) tick_base += skipped * period;
+    }
     arch.setCntpCval(next);
 }
 
