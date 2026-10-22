@@ -500,8 +500,8 @@ pub fn releaseSecondaries(log: *const fn ([]const u8) void) void {
   │ __bss_end        │ .stack (NOLOAD)        │ Core 0 (1 MiB) +             │
   │                  │                        │ Cores 1..3 (3 x 512 KiB)     │
   ├──────────────────┼────────────────────────┼──────────────────────────────┤
-  │ __heap_start     │ .heap (NOLOAD)         │ 64 MiB free store            │
-  │ .. __heap_end    │                        │                              │
+  │ _end             │ free RAM (no section)  │ The heap: port.freeRam()     │
+  │ .. ram_end       │                        │ up to 0x3B40_0000 (~938 MB)  │
   └──────────────────┴────────────────────────┴──────────────────────────────┘
 ```
 
@@ -512,7 +512,6 @@ ENTRY(_start)
 
 STACK_SIZE   = 0x100000;   /* 1 MiB Core 0 stack */
 W_STACK_SIZE = 0x80000;    /* 512 KiB per secondary core stack */
-HEAP_SIZE    = 0x04000000; /* 64 MiB free store */
 
 MEMORY
 {
@@ -552,12 +551,8 @@ SECTIONS
         . = . + W_STACK_SIZE; __stack_top_core3 = .;
     } > RAM
 
-    .heap (NOLOAD) : ALIGN(16) {
-        __heap_start = .;
-        . = . + HEAP_SIZE;
-        __heap_end = .;
-    } > RAM
-
+    /* The end of the image. The RAM from here to the end of RAM (board.zig
+       ram_end) is the free store: port.freeRam() hands it to the heap. */
     _end = .;
 }
 ```
@@ -730,7 +725,7 @@ pub const uos_options: uos.Options = .{
     .default_stack_size_bytes = 16384,            // Default thread stack size
     .idle_stack_size_bytes = 16384,               // Per-CPU idle stack size
     .min_stack_size_bytes = 2048,                 // Minimum allowed stack size
-    .dynamic_memory_size_bytes = 8 * 1024 * 1024, // 8 MiB heap (FirstFitTop)
+    .dynamic_memory_size_bytes = 0,               // 0: the heap is port.freeRam()
     .c_api = true,                                // Export os_* C API (c_api.zig)
     .cmsis_os = true,                             // Export CMSIS-RTOS v1 API
     .c_runtime = true,                            // Minimal C runtime (libc.zig)
