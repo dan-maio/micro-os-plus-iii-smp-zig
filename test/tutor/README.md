@@ -1,6 +1,6 @@
 # µOS++ IIIe tutorial (Zig) — the RTOS one step at a time (Raspberry Pi 4 B)
 
-Status: **in progress** (2026-10-22). Lessons 01 (bring-up) and 02 (threads) are done; the plan below
+Status: **in progress** (2026-10-22). Lessons 01 (bring-up), 02 (threads) and 03 (priorities) are done; the plan below
 covers every lesson. This is the Zig version of the course written for the
 C++ kernel (golden workspace, `micro-os-plus-iii-aarch64/test/rpi4b/tutor/`):
 the same idea, the same base, the same lessons and the same data — a lesson
@@ -34,21 +34,28 @@ Kept deliberately small, written once, used unchanged by every lesson:
 | Console | `board.console(fmt, args)`, one locked line at a time | Only `RESULT`/`FAIL`/`FATAL` lines reach semihosting (the board's rule). |
 | Verdict | `check(cond, fmt, args)`, `finish(summary)` | Counts failed checks; prints `RESULT: PASS|FAIL (...)` and ends the run (`board.hw_result`). |
 | SD log (from lesson 15) | a logger thread owning FatFs on the existing FAT32 volume, files in `/tests` | One owner for the card; read back and CRC-checked at the end. |
-| A second interrupt (from lesson 03) | the BCM2711 System Timer, compare channel C1 (GIC INTID 97), routed to a chosen core | An interrupt source independent of the 1 ms tick (INTID 30): it makes preemption asynchronous and measurable. |
+| A second interrupt (from lesson 03) | `second_timer`: the core's ARM virtual generic timer (CNTV, GIC PPI INTID 27), armed on and interrupting the core that starts it; `nowUs()` reads the BCM2711 System Timer's 1 MHz counter | An interrupt source independent of the 1 ms tick (INTID 30): it makes preemption asynchronous and measurable. |
 
-**The second interrupt.** The kernel's tick is the ARM generic timer
-(CNTP, INTID 30). For the preemption lessons the course adds an independent
-source: the BCM2711 System Timer (1 MHz free-running counter at
-`0xFE003000`), compare channel C1 (C0 and C2 belong to the GPU firmware),
-which raises GIC shared interrupt INTID 97, routable to any core. The Zig
-port's dispatcher (`src/port.zig`) hands every interrupt it does not own to
-the application's `uos_external_irq(iar)` when the test's root declares one,
-so the course adds the source without touching the port. If QEMU's
-`raspi4b` does not model it, the fallback is the per-core virtual generic
-timer (CNTV, INTID 27). The dispatcher takes one interrupt per entry (no
-nesting): "preemption" in this course is a thread preempted by a
-higher-priority thread an interrupt has woken, and the latency from the
-interrupt to that thread running is what is measured.
+**The second interrupt.** The kernel's tick is the ARM generic timer's
+*physical* channel (CNTP, INTID 30). For the preemption lessons the course
+adds an independent source: the same timer's *virtual* channel (CNTV,
+INTID 27), which no other code uses. Both are private to a core (banked
+PPIs): `second_timer.start()` arms the timer of the core that calls it, and
+its interrupts run there. The Zig port's dispatcher (`src/port.zig`) hands
+every interrupt it does not own to the root module's
+`uos_external_irq(iar)`; `test/start.zig` forwards it to the test, which
+declares `pub const uos_external_irq = tutor.second_timer.onIrq;` — so the
+course adds the source without touching the port.
+
+The first design used the BCM2711 System Timer (compare channel C1, GIC
+shared interrupt INTID 97), but QEMU's `raspi4b` does not wire it to the
+GIC (found in the C++ lesson: the compare matches, no interrupt is ever
+pending). The course keeps the System Timer's counter as its microsecond
+clock and takes the interrupt from CNTV, the same on QEMU and on the board.
+The dispatcher takes one interrupt per entry (no nesting): "preemption" in
+this course is a thread preempted by a higher-priority thread an interrupt
+has woken, and the latency from the interrupt to that thread running is
+what is measured.
 
 ### 2.1 The shared base in detail
 
@@ -172,6 +179,32 @@ larger value as the maximum. A lesson compares the list's `checksum()` and
   build (`uos.config.ncpu`); `printRegions()` the three ranges, the stack
   one of the calling thread.
 
+#### The second interrupt: `second_timer` (from lesson 03), `onHardware()`
+
+- `second_timer.start(period_us, callback, arg)` reads the generic timer's
+  frequency (`CNTFRQ_EL0`), converts the period to ticks, sets the first
+  compare one period ahead (`CNTV_CVAL_EL0 = CNTVCT_EL0 + ticks`), enables
+  the timer (`CNTV_CTL_EL0 = 1`) and the PPI on the calling core
+  (`uos.port.gic.setPriority(27, PRIORITY)`, `enableIrq(27)`: its banked
+  priority and enable bits). It must be called on the core that is to take
+  the interrupts.
+- `onIrq(iar)` is the test's `uos_external_irq`: for INTID 27 it moves the
+  compare one period on (the PPI is level-sensitive; when the handler is
+  late, one period from *now*, so no burst of catch-up interrupts), counts
+  the interrupt and the core it ran on, and calls `callback(arg)` — in
+  interrupt context, so only ISR-safe calls such as `Semaphore.post()`. A
+  thread that makes ready is switched to on the way out of the interrupt
+  (`ctx_pending[cpu]` in `port_isr_handler()`).
+- `stop()` masks the timer (`CNTV_CTL_EL0 = IMASK`) and disables the PPI, on
+  the same core as `start()`.
+- `nowUs()` is the System Timer's counter (`0xFE003004`, 1 MHz, the same for
+  all cores); `count()` and `cpusSeen()` the interrupts since `start()` and
+  the mask of the cores they ran on.
+- `onHardware()`: QEMU and the board run the same image (unlike the C++
+  build's `hwd`/`qemu` pair), so it is told at run time from the timer's
+  frequency — 54 MHz on the Pi 4, 62.5 MHz under QEMU's `raspi4b`. A lesson
+  checks its timing bounds strictly only on the board.
+
 #### The start-up
 
 A Zig test's start-up is the port's (`test/start.zig`, `boards/rpi4b/startup.S`,
@@ -224,7 +257,7 @@ each lesson README names the Zig ones: `uos.rtos.Thread`, `rtos.Mutex`,
 |---|---|---|---|---|
 | 01 | `bring-up` | `osMain`, the main thread, the console | 3×8 samples (stack, `.data`, heap), one list, sort, max | the same on core 0, cores 1–3 started, their idle threads |
 | 02 | `threads` | threads with static and heap stacks, `join()`, return values, `yield()` | 4 workers, round-robin at each yield | 4 workers pinned one per core |
-| 03 | `priorities` | priorities, preemption; the second interrupt (C1) | the C1 interrupt wakes a high thread that preempts a busy low one; latency | C1 routed to core 1 |
+| 03 | `priorities` | priorities, preemption; the second interrupt (CNTV) | low/normal/high workers run highest first; the interrupt wakes a high responder that preempts a busy low thread; latency | the workers on cores 1–3 at once; interrupt, responder and busy thread on core 1 |
 | 04 | `clocks` | `sysclock.sleepFor/sleepUntil`, `rtclock`, `hrclock` | a 100 ms periodic sampler | a sampler per core |
 | 05 | `mutex` | mutexes (normal, recursive), try/timed lock | 4 threads add to one shared list | real contention on 4 cores |
 | 06 | `priority-inversion` | mutex protocols none, inherit, protect | low/medium/high around the list | the same, the medium one moved to another core |

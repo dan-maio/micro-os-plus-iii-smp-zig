@@ -292,3 +292,131 @@ pub fn printRegions() void {
     board.console("  heap    {x:0>8} .. {x:0>8}\n", .{ @intFromPtr(arena.ptr), @intFromPtr(arena.ptr) + arena.len });
     board.console("  stack   {x:0>8} .. {x:0>8} (thread {s})\n", .{ @intFromPtr(self.context.stack.bottom()), @intFromPtr(self.context.stack.top()), self.name });
 }
+
+// ---- The second interrupt (from lesson 03) -------------------------------------
+//
+// The core's ARM generic *virtual* timer (CNTV), PPI INTID 27: an interrupt
+// source independent of the kernel's 1 ms tick, which is the *physical*
+// timer (CNTP, INTID 30). Every `period_us` it calls `callback(arg)` in
+// interrupt context; the callback may only use the kernel's ISR-safe calls
+// (a semaphore's post(), ...).
+//
+// The timer and its PPI are private to a core (banked): start() arms them on
+// the core that calls it, and the interrupts run there; stop() must run on
+// the same core. (The BCM2711's own System Timer, an SPI the GIC could route
+// to any core, is not wired to the GIC by QEMU's raspi4b, so the course uses
+// CNTV, the same on QEMU and on the board.)
+//
+// The lesson's root file forwards the port's external-interrupt hook here:
+//     pub const uos_external_irq = tutor.second_timer.onIrq;
+// (src/port.zig hands every interrupt it does not own to root's
+// uos_external_irq(iar), which test/start.zig forwards to the app.)
+
+pub const second_timer = struct {
+    pub const intid: u32 = 27;
+
+    pub const Callback = *const fn (arg: ?*anyopaque) void;
+
+    const st_clo: usize = 0xFE00_3004; // the System Timer's counter, low 32 bits
+
+    var s_ticks: u64 = 0; // the period, in CNTV ticks
+    var s_count = std.atomic.Value(u32).init(0);
+    var s_cpus = std.atomic.Value(u32).init(0);
+    var s_callback: ?Callback = null;
+    var s_arg: ?*anyopaque = null;
+
+    fn cntvct() u64 {
+        return asm volatile ("isb; mrs %[r], cntvct_el0"
+            : [r] "=r" (-> u64),
+        );
+    }
+
+    fn cntvCval() u64 {
+        return asm volatile ("mrs %[r], cntv_cval_el0"
+            : [r] "=r" (-> u64),
+        );
+    }
+
+    fn setCval(v: u64) void {
+        asm volatile ("msr cntv_cval_el0, %[v]; isb"
+            :
+            : [v] "r" (v),
+        );
+    }
+
+    fn setCtl(v: u64) void {
+        asm volatile ("msr cntv_ctl_el0, %[v]; isb"
+            :
+            : [v] "r" (v),
+        );
+    }
+
+    /// The generic timer's frequency (CNTFRQ_EL0).
+    pub fn frequency() u64 {
+        return asm volatile ("mrs %[r], cntfrq_el0"
+            : [r] "=r" (-> u64),
+        );
+    }
+
+    /// The BCM2711 System Timer's free-running 1 MHz counter, in
+    /// microseconds (wraps every ~71 minutes): a clock common to all cores.
+    pub fn nowUs() u32 {
+        return @as(*volatile u32, @ptrFromInt(st_clo)).*;
+    }
+
+    /// Interrupts handled since start().
+    pub fn count() u32 {
+        return s_count.load(.monotonic);
+    }
+
+    /// The cores they ran on (a bit mask).
+    pub fn cpusSeen() u32 {
+        return s_cpus.load(.monotonic);
+    }
+
+    pub fn start(period_us: u32, callback: Callback, arg: ?*anyopaque) void {
+        s_ticks = frequency() * period_us / 1_000_000;
+        s_callback = callback;
+        s_arg = arg;
+        s_count.store(0, .monotonic);
+        s_cpus.store(0, .monotonic);
+
+        // The first compare one period ahead; enabled, not masked (CTL = ENABLE).
+        setCval(cntvct() + s_ticks);
+        setCtl(1);
+        // This core's banked PPI: priority, enable.
+        uos.port.gic.setPriority(intid, uos.port.gic_mod.PRIORITY);
+        uos.port.gic.enableIrq(intid);
+    }
+
+    pub fn stop() void {
+        setCtl(2); // IMASK: the timer's output no longer asserts the PPI
+        uos.port.gic.disableIrq(intid);
+        s_callback = null;
+    }
+
+    /// The port's external-interrupt hook (interrupt context).
+    pub fn onIrq(iar: u32) void {
+        if (iar & 0x3FF != intid) return;
+        // The PPI is level-sensitive: moving the compare into the future
+        // de-asserts it. The next compare is one period after the last, or
+        // -- when the handler is late -- one period from now (no burst of
+        // catch-up interrupts).
+        var next = cntvCval() + s_ticks;
+        const now = cntvct();
+        if (next <= now) next = now + s_ticks;
+        setCval(next);
+
+        _ = s_count.fetchAdd(1, .monotonic);
+        _ = s_cpus.fetchOr(@as(u32, 1) << @intCast(board.cpuSlot()), .monotonic);
+        if (s_callback) |cb| cb(s_arg);
+    }
+};
+
+/// True on the board, false under QEMU, whose emulated cores are not
+/// real-time: timing bounds are checked strictly only on the board. Both
+/// run the same image, so it is told at run time: the Pi 4's generic timer
+/// runs at 54 MHz, QEMU's raspi4b at 62.5 MHz.
+pub fn onHardware() bool {
+    return second_timer.frequency() == 54_000_000;
+}
