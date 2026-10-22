@@ -55,6 +55,9 @@ groups of 10–20 in some Zig runs, passing ones too; not explained either —
 possibly the Debug Probe's UART bridge, which shares its USB link with the
 JTAG traffic.)
 
+**Update (lesson 06):** the cause was found and fixed — a cache line shared
+between core 3's stack and the heap, see `../06-priority-inversion/RESULTS.md`.
+
 The full consoles below are the QEMU runs.
 
 ## One CPU (QEMU)

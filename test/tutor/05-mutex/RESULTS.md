@@ -41,6 +41,9 @@ show `ESR`, `ELR` and `FAR`. The cause is not found yet; the same core 3
 ran nothing in two runs of lesson 04's four-CPU version on the board, also
 after a run without a power-cycle. The re-run here passed.
 
+**Update (lesson 06):** the cause was found and fixed — a cache line shared
+between core 3's stack and the heap, see `../06-priority-inversion/RESULTS.md`.
+
 The full consoles below are the QEMU runs.
 
 ## One CPU (QEMU)

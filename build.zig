@@ -102,6 +102,8 @@ const tests = [_]Test{
     .{ .name = "tutor-04-clocks-4cpu", .dir = "tutor/04-clocks/4cpu", .tutor = true },
     .{ .name = "tutor-05-mutex-1cpu", .dir = "tutor/05-mutex/1cpu", .tutor = true },
     .{ .name = "tutor-05-mutex-4cpu", .dir = "tutor/05-mutex/4cpu", .tutor = true },
+    .{ .name = "tutor-06-priority-inversion-1cpu", .dir = "tutor/06-priority-inversion/1cpu", .tutor = true },
+    .{ .name = "tutor-06-priority-inversion-4cpu", .dir = "tutor/06-priority-inversion/4cpu", .tutor = true },
 };
 
 pub fn build(b: *std.Build) void {
