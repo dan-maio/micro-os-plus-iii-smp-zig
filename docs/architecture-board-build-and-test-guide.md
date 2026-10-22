@@ -952,6 +952,7 @@ Testing in µOS++ IIIe is split into two distinct layers:
 │  │   (Arm CMSIS-RTOS v1 C validator)  │  │ • smp-mat-test (+ sdcard)    │  │
 │  │                                    │  │ • sd_test, smp-mem-test,     │  │
 │  │                                    │  │   smp-mem-inter-test         │  │
+│  │                                    │  │ • smp-shapes-test (Zig only) │  │
 │  └────────────────────────────────────┘  └──────────────────────────────┘  │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -981,7 +982,7 @@ Located inside `micro-os-plus-iii/`:
 
 ### 5.3 Architecture & Board Tests in `<architecture>/test/`
 
-Located inside `<architecture>/test/<test-name>/main.zig`, these are complete bootable applications, faithful ports of the C++ board tests. The table lists the Raspberry Pi 4 B set (`micro-os-plus-iii-aarch64`, 4 CPUs); the Lyra runs the same portable ones on 3 CPUs, and each port's README lists its own:
+Located inside `<architecture>/test/<test-name>/main.zig`, these are complete bootable applications, faithful ports of the C++ board tests (plus `smp-shapes-test`, which is Zig only). The table lists the Raspberry Pi 4 B set (`micro-os-plus-iii-aarch64`, 4 CPUs); the Lyra runs the same portable ones on 3 CPUs, and each port's README lists its own:
 
 | Test Name | Cores | Description & What It Verifies |
 |---|---|---|
@@ -999,6 +1000,7 @@ Located inside `<architecture>/test/<test-name>/main.zig`, these are complete bo
 | **`sd_test`** | 1 | **The SD card and FatFs**: the existing FAT32 volume mounted read-write (nothing formatted); a text file and three pattern files (up to 300 KiB, forcing multi-block CMD18/CMD25) written to `/tests`, read back and compared; the geometry, space and listing printed. Phase A (the host-seeded file) exists only in the QEMU build. |
 | **`smp-mem-test`** | 4 | **High-memory stress**: 20 threads (5 per CPU), 30 operations each: a random block of 1..512 MB from the RAM above 1 GB (`0x40000000..0xFC000000`), 4 KB pages mapped on demand (`mmu_hi_map`), a 64-bit pattern written and read back, the guard pages checked with `AT S1E1R` (`mmu_hi_probe`), canaries checked, pages unmapped (`TLBI VMALLE1IS`). |
 | **`smp-mem-inter-test`** | 4 | **High memory between threads**: 20 threads in a ring, 15 operations each (C++ 30): the owner fills a block and computes its CRC32 (`crc32x`/`crc32b`), the next thread XORs it with a random mask, the owner XORs it back and checks the CRC and the canaries. |
+| **`smp-shapes-test`** | 4 | **Zig only, no C++ counterpart: polymorphic shapes under thread churn**: the interfaces example (a generic intrusive list, `Shape` vtables) on the RTOS; 40 shapes (10 of each kind) built and checked by one thread per kind on its own CPU in one list under a mutex, scaled concurrently, then 20 rounds of 8 workers and a scanner creating, scaling, searching and destroying shapes, the threads created, joined and destroyed every round with the list and the heap checked after each; every line on the UART and in `tests/shapes.log` on the SD card, read back and CRC-checked. |
 | **`rtos-apis`** | 4 | **The kernel's harness suite**, its four parts in the C++ order: the Zig RTOS API (`test-cpp-api.zig`), the original C `test-c-api.c` on the kernel's C API, `std.Io` (`test-iso-api.zig`), and `uos.io.devices` (`test-posix-io-api.zig`); the first failing part stops the run. |
 | **`cmsis-os-validator`** | 4 | **The Arm CMSIS-RTOS v1 validator**: the unmodified `arm-cmsis-rtos-validator` xPack C sources over `cmsis_os.zig`; the validator's test interrupt (NVIC IRQ 0 in C++) is GIC SGI 1. |
 
