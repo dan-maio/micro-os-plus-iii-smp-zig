@@ -182,9 +182,18 @@ pub const interrupts = struct {
     }
 
     pub inline fn inHandlerMode() bool {
+        // The CPU number and its flag are read with IRQs masked: a thread
+        // free to run on any CPU, preempted between the two reads and
+        // resumed elsewhere, would otherwise read the flag of the CPU it
+        // left, possibly in a handler at that moment (seen as a failed
+        // `!inHandlerMode()` assert in setLocked(), smp-list-storage-test's
+        // scanner). In a handler IRQs are already masked.
+        const daif = arch.getDaif();
+        arch.disableIrq();
         const cpu = arch.cpuId();
-        if (cpu < ncpu and @atomicLoad(bool, &in_isr[cpu], .monotonic)) return true;
-        return false;
+        const in_handler = cpu < ncpu and @atomicLoad(bool, &in_isr[cpu], .monotonic);
+        arch.restoreIrq(daif);
+        return in_handler;
     }
 
     pub inline fn isPriorityValid() bool {
