@@ -9,7 +9,7 @@
 
 This document serves as the authoritative technical reference for the **64-bit Arm (AArch64 / ARMv8-A) SMP architecture port** implemented in idiomatic **Zig (0.17.0)**. The primary target hardware platform is the **Raspberry Pi 4 Model B**, powered by the **Broadcom BCM2711 SoC with four ARM Cortex-A72 cores**.
 
-The port runs the 16 tests of the C++ `micro-os-plus-iii-aarch64` rpi4b board (`test/rpi4b/`), as faithful Zig ports: the same banners and lines, the same structure and verdict; the deviations are stated in each test's `main.zig` and in §6. All 16 pass on a physical Raspberry Pi 4 B, over OpenOCD and a CMSIS-DAP probe on JTAG (§6, §7):
+The port runs the 16 tests of the C++ `micro-os-plus-iii-aarch64` rpi4b board (`test/rpi4b/`), as faithful Zig ports: the same banners and lines, the same structure and verdict; the deviations are stated in each test's `main.zig` and in §6. One more test, `smp-shapes-test`, is Zig only (item 11). All 17 pass on a physical Raspberry Pi 4 B, over OpenOCD and a CMSIS-DAP probe on JTAG (§6, §7):
 
 1. `smp-test0` — core 0 bring-up: the PL011 console, the MMU, the 1 kHz generic timer tick, one thread sleeping (10 heartbeats).
 2. `smp-test1` — semaphore ping-pong between cores 0 and 1, a logger on core 2.
@@ -21,6 +21,7 @@ The port runs the 16 tests of the C++ `micro-os-plus-iii-aarch64` rpi4b board (`
 8. `mutex-stress`, `rtos-apis`, `cmsis-os-validator` — the kernel's harness suites, run as the C++ rpi4b harness platform runs them (4 cores, an 8192-element main stack).
 9. `sd_test`, `smp-num-test`, `smp-pipeline-test`, `smp-mat-sdcard-test` — the SD card (EMMC2) and FatFs on its existing FAT32 volume, files in `/tests` (§5.11).
 10. `smp-mem-test`, `smp-mem-inter-test` — 20 threads allocating, writing and checking blocks of up to 512 MB in the RAM above 1 GB, with MMU guard pages and canaries.
+11. `smp-shapes-test` — Zig only, no C++ counterpart: the interfaces example (a generic intrusive list, vtable polymorphism) under thread generation and destruction on 4 cores, logged on the UART and the SD card (§5.12).
 
 ---
 
@@ -415,11 +416,21 @@ As the C++ rpi4b hardware build (`test/boards/rpi4b/include/uart.hpp`, `mirror_v
 ### 5.11 The SD Card: EMMC2 and FatFs
 `drivers/sd.zig` is the C++ `drivers/src/sd.cpp` for this board: a polled SDHCI driver on EMMC2 (0xFE340000), PIO through the buffer data port, no DMA and no interrupts (CMD0, CMD8, ACMD41, CMD2, CMD3, CMD9, CMD7, ACMD6; single and multi-block transfers with CMD12). As the C++ `HW_BUILD` tests, the card is the Pi's boot card and is never formatted: `drivers/fatfs.zig` (the C++ `diskio_sd.cpp` and `fatfs_hw.cpp`, shared with the AArch32 port) mounts its existing FAT32 volume with FatFs R0.15a (the C `ff.c`, unchanged, `FF_USE_MKFS 0`) and keeps every test file in `/tests`.
 
+### 5.12 `smp-shapes-test`: Polymorphic Shapes Under Thread Churn
+A Zig-only test with no C++ counterpart. `test/smp-shapes-test/shapes.zig` is the interfaces example (`~/Documents/work_zig/interfaces`) on the RTOS: `IntrusiveList(T)`, generic over any struct with a `next: ?*T` field; `Shape`, a type-erased `ptr` plus a `*const VTable` of `callconv(.c)` `area`, `name` and `scale`; `ShapeList`; `Circle`, `Triangle`, `Ellipse` and `Rect`, each embedding its `Shape` node. Each shape also records the area its constructor arguments (and every scale since) predict, and the concrete type is recovered from the vtable pointer, so a node with an unknown vtable is reported, never freed with a wrong size. All shapes are on the kernel heap; one `ShapeList` is shared by every thread under one `rtos.Mutex`.
+
+1. **Build.** Four builder threads, one per kind, each pinned to its own CPU, construct 10 shapes each, check each one (name, kind, area, the node being its own object's) and push it on the list. The list is then checked: 40 nodes, 10 per kind, the total area, a search per kind.
+2. **Scale.** Four threads, one per kind, scale their kind ×2 under the mutex at the same time, check the kind's area is 4× and restore it; `ShapeList.modify()` scales one shape ×3 and back.
+3. **Stress.** 20 rounds of 1.5 s. Each round creates 8 workers (two per CPU) and one scanner. The workers create, check, push, scale, search, unlink and free shapes of random kinds and sizes, each changing only its own shapes; the scanner walks the whole list under the mutex and checks every node. At the end of the round every worker frees its shapes and returns, and the nine threads are joined and destroyed. After each round the list must again hold exactly the 40 phase 1 shapes with their total area, and the heap's allocated bytes must be back to their level before the round: no shape, thread object or stack leaked.
+4. **Logging.** One logger thread on CPU 0 owns the UART and the card; every other thread sends it lines through a `MessageQueueTyped`. It prints each line on the UART and appends it, in chunks of up to 4 KiB, to `tests/shapes.log`. At the end the file is read back and its size and CRC32 compared with what was written. Only the verdict line reaches semihosting (§5.10).
+
+PASS when no check failed, every created shape was freed, the heap is back to its starting level and the SD log reads back intact.
+
 ---
 
 ## 6. Hardware Test Results
 
-All 16 tests, run on 2026-10-16 on a Raspberry Pi 4 Model B, Raspberry Pi Debug Probe (CMSIS-DAP) on JTAG, `test/run-all.sh`, with the `exit()` / `_Exit()` end of run. The time is the whole run: the OpenOCD watchdog reset, 10 s of boot, the load and the test.
+The 16 ported tests, run on 2026-10-16 (and `smp-shapes-test` on 2026-10-22) on a Raspberry Pi 4 Model B, Raspberry Pi Debug Probe (CMSIS-DAP) on JTAG, `test/run-all.sh`, with the `exit()` / `_Exit()` end of run. The time is the whole run: the OpenOCD watchdog reset, 10 s of boot, the load and the test.
 
 | Test | From (C++ `test/rpi4b/`) | Result | Time |
 |---|---|---|---|
@@ -439,6 +450,7 @@ All 16 tests, run on 2026-10-16 on a Raspberry Pi 4 Model B, Raspberry Pi Debug 
 | `smp-mat-sdcard-test` | `smp-mat-sdcard-test` ($N=200, B=20$) | **PASS** | 16 s |
 | `smp-mem-test` | `smp_mem_test` | **PASS** | 48 s |
 | `smp-mem-inter-test` | `smp_mem_inter_test` (15 operations per thread, C++ 30) | **PASS** | 106 s |
+| `smp-shapes-test` | none: Zig only (§5.12), run on 2026-10-22 | **PASS** | 47 s |
 
 Deviations from C++, each stated in its test: the matrix tests' pool and solver stacks (§5.5); `smp-mem-inter-test`'s operation count (every run must end within 3 minutes); `smp-num-test` formats its floating-point line with `std.fmt` (the kernel's `printf` has no floating point); the kernel prints its startup banner and creates the secondary cores' idle threads itself.
 

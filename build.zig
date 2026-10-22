@@ -82,6 +82,7 @@ const tests = [_]Test{
     .{ .name = "smp-num-test", .devices = true },
     .{ .name = "smp-mem-test" },
     .{ .name = "smp-mem-inter-test" },
+    .{ .name = "smp-shapes-test", .devices = true },
 };
 
 pub fn build(b: *std.Build) void {

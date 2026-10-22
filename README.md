@@ -72,9 +72,20 @@ pass on the board (2026-10-16, with the `exit()` / `_Exit()` end of run):
 | `smp-mat-sdcard-test` | `smp-mat-sdcard-test` (N = 200, B = 20) | PASS |
 | `smp-mem-test` | `smp_mem_test` | PASS |
 | `smp-mem-inter-test` | `smp_mem_inter_test` (15 operations per thread; C++ 30) | PASS |
+| `smp-shapes-test` | none: Zig only (the interfaces example) | PASS (2026-10-22) |
 
 The harness suites run as the C++ rpi4b harness platform runs them: 4
 cores (1–3 released first), an 8192-element main stack.
+
+`smp-shapes-test` has no C++ counterpart: it puts the interfaces example
+(a generic intrusive list, vtable polymorphism, threads) on the RTOS. 40
+shapes (10 circles, triangles, ellipses and rects) are built and checked by
+one thread per kind on its own CPU, in one list under an RTOS mutex; then
+20 rounds of 8 worker threads and a scanner create, scale, search and
+destroy shapes, and the threads themselves are created, joined and
+destroyed every round, the list and the heap checked after each. One
+logger thread on CPU 0 prints every line on the UART and appends it to
+`tests/shapes.log` on the SD card, which is read back and CRC-checked.
 
 ## Layout
 
