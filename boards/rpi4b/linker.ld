@@ -43,16 +43,26 @@ SECTIONS
         __bss_end = .;
     } > RAM
 
-    /* Per-core stacks (SP_EL1) */
-    .stack (NOLOAD) : ALIGN(16) {
-        . = . + STACK_SIZE;   __stack_top = .;
-        . = . + W_STACK_SIZE; __stack_top_core1 = .;
-        . = . + W_STACK_SIZE; __stack_top_core2 = .;
-        . = . + W_STACK_SIZE; __stack_top_core3 = .;
+    /* Per-core stacks (SP_EL1), each top on a cache line (64 bytes), and a
+       guard line after core 3's: no stack may share a cache line with the
+       heap. A secondary core starts with its MMU and caches off, so its first
+       frames (bl mmu_enable, bl boot_coreN) go straight to RAM; core 0, with
+       caches on, may hold that line dirty, with the RAM's older bytes, if the
+       heap's first chunk is in it -- and once core 3 turns its caches on, its
+       `ret` reads core 0's stale copy and jumps to garbage (seen: PC
+       alignment fault on core 3, ELR 0xff79ff47ff4eff8a). */
+    .stack (NOLOAD) : ALIGN(64) {
+        . = . + STACK_SIZE;   . = ALIGN(64); __stack_top = .;
+        . = . + W_STACK_SIZE; . = ALIGN(64); __stack_top_core1 = .;
+        . = . + W_STACK_SIZE; . = ALIGN(64); __stack_top_core2 = .;
+        . = . + W_STACK_SIZE; . = ALIGN(64); __stack_top_core3 = .;
+        . = . + 64;           /* the guard line */
     } > RAM
 
-    /* The end of the image. The RAM from here to the end of RAM (board.zig
-       ram_end) is the free store: port.freeRam() hands it to the heap. */
+    /* The end of the image, on a page. The RAM from here to the end of RAM
+       (board.zig ram_end) is the free store: port.freeRam() hands it to the
+       heap. */
+    . = ALIGN(4096);
     _end = .;
 
     /DISCARD/ : {
