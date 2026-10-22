@@ -29,8 +29,10 @@ SECTIONS
     } > RAM
 
     .data : ALIGN(8) {
+        __data_start = .;       /* for the tutorial's region checks */
         *(.data*)
         *(.got*)
+        __data_end = .;
     } > RAM
 
     .bss (NOLOAD) : ALIGN(16) {

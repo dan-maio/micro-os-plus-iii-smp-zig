@@ -96,6 +96,14 @@ checked to lie in the region it claims; then 10 rounds of 8 workers and a
 scanner push, unlink, change and search nodes of all three regions, the
 threads created and destroyed every round. Console on the UART only.
 
+`test/tutor/` is a µOS++ tutorial, the Zig version of the one in the C++
+golden workspace: one small application (samples in an intrusive list on
+the stack, in `.data` and on the heap; sort, max, checksum) growing one RTOS
+feature per lesson, every lesson in a one-CPU (`board.options(1)`) and a
+four-CPU version, every lesson README opening with the theory (README.md
+and PDF; `test/tutor/README.md` is the plan and the index). Lesson 01,
+bring-up, passes both versions under QEMU and on the board.
+
 ## Layout
 
 | Path | Contents |

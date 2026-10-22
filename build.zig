@@ -30,6 +30,12 @@ const Test = struct {
     c_include: ?[]const u8 = null,
     devices: bool = false,
     cmsis_rv: bool = false,
+    /// The source folder under test/ when it is not the test's name: the
+    /// tutorial's lessons, test/tutor/NN-name/{1cpu,4cpu}/.
+    dir: ?[]const u8 = null,
+    /// A tutorial lesson: it imports the course's shared base as `tutor`
+    /// (test/tutor/common/tutor.zig).
+    tutor: bool = false,
 };
 
 const cmsis_rv_sources = [_][]const u8{
@@ -84,6 +90,10 @@ const tests = [_]Test{
     .{ .name = "smp-mem-inter-test" },
     .{ .name = "smp-shapes-test", .devices = true },
     .{ .name = "smp-list-storage-test" },
+    // The tutorial (test/tutor/README.md): every lesson in a one-CPU and a
+    // four-CPU version, each its own test.
+    .{ .name = "tutor-01-bring-up-1cpu", .dir = "tutor/01-bring-up/1cpu", .tutor = true },
+    .{ .name = "tutor-01-bring-up-4cpu", .dir = "tutor/01-bring-up/4cpu", .tutor = true },
 };
 
 pub fn build(b: *std.Build) void {
@@ -120,7 +130,7 @@ pub fn build(b: *std.Build) void {
             .board = board_id,
             .target = target,
             .optimize = optimize,
-            .app_source_file = b.path(b.fmt("test/{s}/main.zig", .{t.name})),
+            .app_source_file = b.path(b.fmt("test/{s}/main.zig", .{t.dir orelse t.name})),
             .test_def = t,
             .cmsis_rv_path = cmsis_rv_path,
         });
@@ -149,9 +159,10 @@ pub fn build(b: *std.Build) void {
                 "raspi4b",
                 "-smp",
                 "4",
+                // -nographic connects the first serial port (the console UART)
+                // and the monitor to stdio; a second "-serial stdio" would
+                // claim stdio twice, which QEMU refuses.
                 "-nographic",
-                "-serial",
-                "stdio",
                 "-semihosting-config",
                 "enable=on,target=native",
                 "-kernel",
@@ -209,6 +220,15 @@ pub fn addFirmware(
             .{ .name = "board", .module = test_board_mod },
         },
     });
+
+    // The tutorial's lessons share the course's base, as a module: Zig does
+    // not let a test import a file outside its own folder.
+    if (options.test_def.tutor) {
+        const tutor_mod = b.createModule(.{ .root_source_file = b.path("test/tutor/common/tutor.zig") });
+        tutor_mod.addImport("uos", uos_mod);
+        tutor_mod.addImport("board", test_board_mod);
+        app_mod.addImport("tutor", tutor_mod);
+    }
 
     // The SD card (EMMC2) and FatFs on its existing FAT32 volume, as the C++
     // HW_BUILD tests: FatFs R0.15a is the C ff.c, unchanged, over the
