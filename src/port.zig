@@ -535,6 +535,18 @@ pub const trace = struct {
     }
 };
 
+extern var _end: u8;
+
+/// The free store: the RAM after the image (.text, .rodata, .data, .bss and
+/// the per-core stacks, the linker script's `_end`) up to the end of RAM
+/// below the VideoCore memory (`board.ram_end`). The kernel's system heap
+/// takes it when the application sets `dynamic_memory_size_bytes = 0`.
+pub fn freeRam() []u8 {
+    const start = std.mem.alignForward(usize, @intFromPtr(&_end), 16);
+    const end: usize = @intCast(board.ram_end);
+    return @as([*]u8, @ptrFromInt(start))[0 .. end - start];
+}
+
 pub fn interruptStack() ?[]StackElement {
     return null;
 }

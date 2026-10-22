@@ -9,7 +9,6 @@ ENTRY(_start)
 
 STACK_SIZE   = 0x100000;   /* 1 MiB core 0 */
 W_STACK_SIZE = 0x80000;    /* 512 KiB each cores 1-3 */
-HEAP_SIZE    = 0x04000000; /* 64 MiB free store */
 
 MEMORY
 {
@@ -50,13 +49,8 @@ SECTIONS
         . = . + W_STACK_SIZE; __stack_top_core3 = .;
     } > RAM
 
-    /* Heap / dynamic memory */
-    .heap (NOLOAD) : ALIGN(16) {
-        __heap_start = .;
-        . = . + HEAP_SIZE;
-        __heap_end = .;
-    } > RAM
-
+    /* The end of the image. The RAM from here to the end of RAM (board.zig
+       ram_end) is the free store: port.freeRam() hands it to the heap. */
     _end = .;
 
     /DISCARD/ : {

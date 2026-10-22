@@ -14,7 +14,9 @@ pub fn options(ncpu: u8) uos.Options {
         .default_stack_size_bytes = 16 * 1024,
         .idle_stack_size_bytes = 16 * 1024,
         .min_stack_size_bytes = 2048,
-        .dynamic_memory_size_bytes = 8 * 1024 * 1024,
+        // 0: the system heap is the RAM after the image (port.freeRam()),
+        // not a static buffer in .bss.
+        .dynamic_memory_size_bytes = 0,
         // memcpy() & co. for the C sources (FatFs).
         .c_runtime = true,
     };
