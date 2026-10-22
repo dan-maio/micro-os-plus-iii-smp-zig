@@ -1,6 +1,6 @@
 # µOS++ IIIe tutorial (Zig) — the RTOS one step at a time (Raspberry Pi 4 B)
 
-Status: **in progress** (2026-10-22). Lessons 01 (bring-up), 02 (threads), 03 (priorities) and 04 (clocks) are done; the plan below
+Status: **in progress** (2026-10-22). Lessons 01 (bring-up), 02 (threads), 03 (priorities), 04 (clocks) and 05 (mutex) are done; the plan below
 covers every lesson. This is the Zig version of the course written for the
 C++ kernel (golden workspace, `micro-os-plus-iii-aarch64/test/rpi4b/tutor/`):
 the same idea, the same base, the same lessons and the same data — a lesson
@@ -259,7 +259,7 @@ each lesson README names the Zig ones: `uos.rtos.Thread`, `rtos.Mutex`,
 | 02 | `threads` | threads with static and heap stacks, `join()`, return values, `yield()` | 4 workers, round-robin at each yield | 4 workers pinned one per core |
 | 03 | `priorities` | priorities, preemption; the second interrupt (CNTV) | low/normal/high workers run highest first; the interrupt wakes a high responder that preempts a busy low thread; latency | the workers on cores 1–3 at once; interrupt, responder and busy thread on core 1 |
 | 04 | `clocks` | `sysclock`, `hrclock`, `rtclock`; `sleepFor`, `sleepUntil`; timing code | the clocks against the System Timer; the sort timed; an absolute and a relative sampler | part A also on core 1; absolute samplers on cores 1–3 |
-| 05 | `mutex` | mutexes (normal, recursive), try/timed lock | 4 threads add to one shared list | real contention on 4 cores |
+| 05 | `mutex` | `Mutex` (normal, errorcheck, recursive), `tryLock`, `timedLock` | 4 threads push on one shared list without and with a lock; the three types; waiting with a limit | the 4 threads one per core: real contention; the holder on core 1 |
 | 06 | `priority-inversion` | mutex protocols none, inherit, protect | low/medium/high around the list | the same, the medium one moved to another core |
 | 07 | `semaphores` | binary and counting semaphores | producer → bounded buffer → consumer | across cores |
 | 08 | `condvar` | condition variables, predicates, notify one/all | the lesson 07 pipeline | several consumers on several cores |
