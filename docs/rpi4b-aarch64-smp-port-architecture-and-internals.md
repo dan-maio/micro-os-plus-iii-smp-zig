@@ -9,7 +9,7 @@
 
 This document serves as the authoritative technical reference for the **64-bit Arm (AArch64 / ARMv8-A) SMP architecture port** implemented in idiomatic **Zig (0.17.0)**. The primary target hardware platform is the **Raspberry Pi 4 Model B**, powered by the **Broadcom BCM2711 SoC with four ARM Cortex-A72 cores**.
 
-The port runs the 16 tests of the C++ `micro-os-plus-iii-aarch64` rpi4b board (`test/rpi4b/`), as faithful Zig ports: the same banners and lines, the same structure and verdict; the deviations are stated in each test's `main.zig` and in §6. One more test, `smp-shapes-test`, is Zig only (item 11). All 17 pass on a physical Raspberry Pi 4 B, over OpenOCD and a CMSIS-DAP probe on JTAG (§6, §7):
+The port runs the 16 tests of the C++ `micro-os-plus-iii-aarch64` rpi4b board (`test/rpi4b/`), as faithful Zig ports: the same banners and lines, the same structure and verdict; the deviations are stated in each test's `main.zig` and in §6. Two more tests, `smp-shapes-test` and `smp-list-storage-test`, are Zig only (items 11 and 12). All 18 pass on a physical Raspberry Pi 4 B, over OpenOCD and a CMSIS-DAP probe on JTAG (§6, §7):
 
 1. `smp-test0` — core 0 bring-up: the PL011 console, the MMU, the 1 kHz generic timer tick, one thread sleeping (10 heartbeats).
 2. `smp-test1` — semaphore ping-pong between cores 0 and 1, a logger on core 2.
@@ -22,6 +22,7 @@ The port runs the 16 tests of the C++ `micro-os-plus-iii-aarch64` rpi4b board (`
 9. `sd_test`, `smp-num-test`, `smp-pipeline-test`, `smp-mat-sdcard-test` — the SD card (EMMC2) and FatFs on its existing FAT32 volume, files in `/tests` (§5.11).
 10. `smp-mem-test`, `smp-mem-inter-test` — 20 threads allocating, writing and checking blocks of up to 512 MB in the RAM above 1 GB, with MMU guard pages and canaries.
 11. `smp-shapes-test` — Zig only, no C++ counterpart: the interfaces example (a generic intrusive list, vtable polymorphism) under thread generation and destruction on 4 cores, logged on the UART and the SD card (§5.12).
+12. `smp-list-storage-test` — Zig only: the example's generic intrusive list with its nodes on thread stacks, in the data segment and on the heap, under thread churn on 4 cores; UART only (§5.13).
 
 ---
 
@@ -426,11 +427,19 @@ A Zig-only test with no C++ counterpart. `test/smp-shapes-test/shapes.zig` is th
 
 PASS when no check failed, every created shape was freed, the heap is back to its starting level and the SD log reads back intact.
 
+### 5.13 `smp-list-storage-test`: One List, Three Storage Regions
+A Zig-only test. `test/smp-list-storage-test/list.zig` is the example's `IntrusiveList(T)` instantiated for two unrelated payloads: `Record` (an id, an owner, its region, a value and a seal word hashed from them, so a field changed behind the record's back is detected) and `TextNode` (the example's `StringNode`, a 32-byte inline buffer). One list of each is shared by every thread under one `rtos.Mutex`. The list never allocates: where a node lives is its owner's choice, and the test checks it. The thread stacks are static arrays, the data-segment nodes are arrays with a non-zero initializer (so they are in `.data`, not `.bss`), and the heap nodes come from the system heap; the three address ranges are disjoint, and every node must lie in the one it claims, a stack node in its own thread's stack.
+
+1. **Regions.** Four threads, one per CPU, each put 8 records and one text node on their stack, in the data segment and on the heap, push them on the shared lists, and wait, their stack frames alive, while the main thread checks the lists (96 records, 8 per thread and region, 12 texts, every seal and address) and uppercases the data-segment texts through the generic list. Released, each thread unlinks its stack nodes, which die with its frame, and returns; the 64 data-segment and heap records and 8 texts stay.
+2. **Churn.** 10 rounds of 1 s. Each round creates 8 workers (two per CPU) and a scanner (no CPU affinity). The workers push nodes from their stack frame, from their data-segment pool and from the heap, unlink and free them, change their values under the mutex and search the phase 1 records; the scanner walks both lists under the mutex checking every seal and address. At the end of the round each worker unlinks all its nodes and returns, and the nine threads are joined and destroyed; the lists must again hold the phase 1 nodes, the data-segment pool must be free and the heap back to its level.
+
+**The port bug it found.** The first run panicked in round 9: `std.debug.assert(!interrupts.inHandlerMode())` in `scheduler.setLocked()` failed, called from `Mutex.lock()` by the scanner, although `Mutex.lock()` had just checked the same condition. `inHandlerMode()` read the CPU number and then that CPU's `in_isr` flag with IRQs enabled; the scanner, the one thread free to run on any CPU and taking the mutex about a thousand times a round, could be preempted between the two reads and resumed on another CPU, and so read the flag of a CPU it had left, in a handler at that moment. `inHandlerMode()` now masks IRQs around the two reads, as `isLocked()` does (in a handler they are masked already).
+
 ---
 
 ## 6. Hardware Test Results
 
-The 16 ported tests, run on 2026-10-16 (and `smp-shapes-test` on 2026-10-22) on a Raspberry Pi 4 Model B, Raspberry Pi Debug Probe (CMSIS-DAP) on JTAG, `test/run-all.sh`, with the `exit()` / `_Exit()` end of run. The time is the whole run: the OpenOCD watchdog reset, 10 s of boot, the load and the test.
+The 16 ported tests, run on 2026-10-16 (and the two Zig-only tests on 2026-10-22) on a Raspberry Pi 4 Model B, Raspberry Pi Debug Probe (CMSIS-DAP) on JTAG, `test/run-all.sh`, with the `exit()` / `_Exit()` end of run. The time is the whole run: the OpenOCD watchdog reset, 10 s of boot, the load and the test.
 
 | Test | From (C++ `test/rpi4b/`) | Result | Time |
 |---|---|---|---|
@@ -451,6 +460,7 @@ The 16 ported tests, run on 2026-10-16 (and `smp-shapes-test` on 2026-10-22) on 
 | `smp-mem-test` | `smp_mem_test` | **PASS** | 48 s |
 | `smp-mem-inter-test` | `smp_mem_inter_test` (15 operations per thread, C++ 30) | **PASS** | 106 s |
 | `smp-shapes-test` | none: Zig only (§5.12), run on 2026-10-22 | **PASS** | 47 s |
+| `smp-list-storage-test` | none: Zig only (§5.13), run on 2026-10-22 | **PASS** | 26 s |
 
 Deviations from C++, each stated in its test: the matrix tests' pool and solver stacks (§5.5); `smp-mem-inter-test`'s operation count (every run must end within 3 minutes); `smp-num-test` formats its floating-point line with `std.fmt` (the kernel's `printf` has no floating point); the kernel prints its startup banner and creates the secondary cores' idle threads itself.
 
