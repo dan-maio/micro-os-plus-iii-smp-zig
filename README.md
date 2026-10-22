@@ -73,6 +73,7 @@ pass on the board (2026-10-16, with the `exit()` / `_Exit()` end of run):
 | `smp-mem-test` | `smp_mem_test` | PASS |
 | `smp-mem-inter-test` | `smp_mem_inter_test` (15 operations per thread; C++ 30) | PASS |
 | `smp-shapes-test` | none: Zig only (the interfaces example) | PASS (2026-10-22) |
+| `smp-list-storage-test` | none: Zig only (the interfaces example's list) | PASS (2026-10-22) |
 
 The harness suites run as the C++ rpi4b harness platform runs them: 4
 cores (1–3 released first), an 8192-element main stack.
@@ -86,6 +87,14 @@ destroy shapes, and the threads themselves are created, joined and
 destroyed every round, the list and the heap checked after each. One
 logger thread on CPU 0 prints every line on the UART and appends it to
 `tests/shapes.log` on the SD card, which is read back and CRC-checked.
+
+`smp-list-storage-test`, Zig only too, is the example's generic intrusive
+list with its nodes in the three storage regions: a thread's stack, the
+data segment and the heap. Four threads (one per CPU) put records and text
+nodes in all three on shared lists under one mutex, and every node is
+checked to lie in the region it claims; then 10 rounds of 8 workers and a
+scanner push, unlink, change and search nodes of all three regions, the
+threads created and destroyed every round. Console on the UART only.
 
 ## Layout
 
