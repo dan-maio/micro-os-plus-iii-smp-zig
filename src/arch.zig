@@ -111,6 +111,19 @@ pub inline fn cntpTval() u32 {
     return @truncate(v);
 }
 
+pub inline fn setCntpCval(cval: u64) void {
+    asm volatile ("msr cntp_cval_el0, %[v]"
+        :
+        : [v] "r" (cval),
+        : .{ .memory = true });
+}
+
+pub inline fn cntpCval() u64 {
+    return asm volatile ("mrs %[r], cntp_cval_el0"
+        : [r] "=r" (-> u64),
+    );
+}
+
 pub inline fn setCntpCtl(ctl: u32) void {
     asm volatile ("msr cntp_ctl_el0, %[v]"
         :

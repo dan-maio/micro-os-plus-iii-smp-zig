@@ -295,6 +295,23 @@ pub const scheduler = struct {
 // Timer & Interrupt Hardware Setup
 
 var timer_period_cycles: u32 = 54_000;
+// The counter's value when core 0 started its tick: the origin of hrclock,
+// so hrclock.now() (count - origin) and the clock's tick-driven count
+// (ticks * cyclesPerTick) agree at every tick.
+var tick_base: u64 = 0;
+var tick_base_set: bool = false;
+
+// In the tick interrupt: the next compare one period after the last one (not
+// one period from now, which would add the interrupt's latency to every tick
+// and make the kernel's clocks lose time). A late tick is caught up: the
+// compare is already due and the interrupt fires again. Far behind (a core
+// halted by the debugger), resynchronise rather than replay the ticks.
+fn rearmTick() void {
+    var next = arch.cntpCval() + timer_period_cycles;
+    const now = arch.cntPct();
+    if (now > next + 1000 * @as(u64, timer_period_cycles)) next = now + timer_period_cycles;
+    arch.setCntpCval(next);
+}
 
 fn sysInit() void {
     const cpu = arch.cpuId();
@@ -310,8 +327,13 @@ fn sysInit() void {
         timer_period_cycles = 54_000;
     }
 
-    // Program 1 ms physical timer countdown
-    arch.setCntpTval(timer_period_cycles);
+    // The 1 ms tick on an absolute grid: compare = start + k * period.
+    const now = arch.cntPct();
+    if (!tick_base_set) { // core 0, first: the hrclock origin
+        tick_base = now;
+        tick_base_set = true;
+    }
+    arch.setCntpCval(now + timer_period_cycles);
     arch.setCntpCtl(1); // enable timer, unmask interrupt
 
     gic.setPriority(gic_mod.INTID_TIMER_PNS, gic_mod.PRIORITY);
@@ -393,7 +415,7 @@ export fn port_isr_handler(current_sp: [*]StackElement) callconv(.c) [*]StackEle
     }
 
     if (id == gic_mod.INTID_TIMER_PNS) {
-        arch.setCntpTval(timer_period_cycles);
+        rearmTick(); // absolute: no drift
         gic.endOfInterrupt(iar);
         _port_core_alive[cpu] = 1;
         if (cpu == 0) uos.rtos.clocks.sysTickHandler();
@@ -488,7 +510,9 @@ pub const clock_highres = struct {
     pub const has_hardware_counter: bool = true;
 
     pub inline fn hardwareCounter() u64 {
-        return arch.cntPct();
+        // From core 0's tick origin, so that it agrees with the tick-driven
+        // count the kernel compares hrclock timestamps with.
+        return arch.cntPct() - tick_base;
     }
 
     pub inline fn inputClockFrequencyHz() u32 {
