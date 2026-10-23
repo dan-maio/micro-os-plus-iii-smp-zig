@@ -104,7 +104,9 @@ const KernelLock = extern struct {
 
 export var _smp_klock: KernelLock = .{};
 
-var lock_state: [ncpu]bool = @splat(false);
+var lock_state: [ncpu]bool = @splat(false); // the application's scheduler lock
+var kernel_lock_state: [ncpu]bool = @splat(false); // the kernel's own critical section
+var kernel_irq_state: [ncpu]u64 = @splat(0); // the interrupt section it entered
 var ctx_pending: [ncpu]u32 = @splat(0);
 var in_isr: [ncpu]bool = @splat(false);
 export var _port_core_alive: [ncpu]u32 = @splat(0);
@@ -216,29 +218,62 @@ pub const scheduler = struct {
     pub fn isLocked() bool {
         const daif = arch.getDaif();
         arch.disableIrq();
-        const res = lock_state[arch.cpuId()];
+        // Locked for a switch: the application's scheduler lock, or a
+        // kernel critical section.
+        const cpu = arch.cpuId();
+        const res = lock_state[cpu] or kernel_lock_state[cpu];
         arch.restoreIrq(daif);
         return res;
     }
 
+    /// The application's scheduler lock, the classic one: this core's
+    /// thread switches stop, nothing else does -- interrupts stay as they
+    /// are and no spinlock is held, so ISRs keep running and the other cores
+    /// are not affected. A switch an ISR asked for meanwhile (ctx_pending) is
+    /// done when the lock is released.
     pub fn setLocked(state: bool) bool {
         std.debug.assert(!interrupts.inHandlerMode());
+        const daif = arch.getDaif();
+        arch.disableIrq();
+        const cpu = arch.cpuId();
+        const prev = lock_state[cpu];
+        lock_state[cpu] = state;
+        var switch_now = false;
+        if (prev and !state and !kernel_lock_state[cpu] and ctx_pending[cpu] != 0) {
+            ctx_pending[cpu] = 0;
+            switch_now = true;
+        }
+        arch.restoreIrq(daif);
+        if (switch_now) reschedule();
+        return prev;
+    }
+
+    /// The kernel's own critical section: the interrupt critical section
+    /// (interrupts masked on this core, the kernel spinlock held), so that the
+    /// kernel's shared data (the heap, the objects' internals) is safe from
+    /// this core's ISRs and from the other cores, plus a per-core flag, so
+    /// that `scheduler.locked()` is true inside it (no switch, no blocking
+    /// call). Nested sections enter the interrupt section once; the outer one
+    /// restores its state. This is what the scheduler lock used to be.
+    pub fn setKernelLocked(state: bool) bool {
+        std.debug.assert(!interrupts.inHandlerMode());
         if (state) {
-            arch.disableIrq();
+            const irq = interrupts.criticalEnter();
             const cpu = arch.cpuId();
-            const prev = lock_state[cpu];
-            if (!prev) {
-                klockTake(cpu);
-                lock_state[cpu] = true;
+            const prev = kernel_lock_state[cpu];
+            if (prev) {
+                interrupts.criticalExit(irq); // nested: already held
+            } else {
+                kernel_irq_state[cpu] = irq;
+                kernel_lock_state[cpu] = true;
             }
             return prev;
         } else {
             const cpu = arch.cpuId();
-            const prev = lock_state[cpu];
+            const prev = kernel_lock_state[cpu];
             if (prev) {
-                lock_state[cpu] = false;
-                klockPut(cpu);
-                arch.enableIrq();
+                kernel_lock_state[cpu] = false;
+                interrupts.criticalExit(kernel_irq_state[cpu]);
             }
             return prev;
         }
@@ -285,6 +320,7 @@ pub const scheduler = struct {
         uos.rtos.scheduler.internalPrepareCpu(0);
         g_core_stage[0] = 3;
         for (&lock_state) |*s| s.* = false;
+        for (&kernel_lock_state) |*s| s.* = false;
         reschedule();
         arch.enableIrq();
         while (true) arch.wfi();
@@ -479,6 +515,7 @@ fn bootSecondaryCore(cpu: u32) noreturn {
     uos.rtos.scheduler.internalPrepareCpu(cpu);
     g_core_stage[cpu] = 3;
     lock_state[cpu] = false;
+    kernel_lock_state[cpu] = false;
     scheduler.reschedule();
     arch.enableIrq();
     while (true) arch.wfi();
