@@ -1,6 +1,6 @@
 # µOS++ IIIe tutorial (Zig) — the RTOS one step at a time (Raspberry Pi 4 B)
 
-Status: **in progress** (2026-10-22). Lessons 01 (bring-up), 02 (threads), 03 (priorities), 04 (clocks), 05 (mutex) and 06 (priority inversion) are done; the plan below
+Status: **in progress** (2026-10-22). Lessons 01 (bring-up), 02 (threads), 03 (priorities), 04 (clocks), 05 (mutex), 06 (priority inversion) and 07 (semaphores) are done; the plan below
 covers every lesson. This is the Zig version of the course written for the
 C++ kernel (golden workspace, `micro-os-plus-iii-aarch64/test/rpi4b/tutor/`):
 the same idea, the same base, the same lessons and the same data — a lesson
@@ -33,7 +33,7 @@ Kept deliberately small, written once, used unchanged by every lesson:
 | Data generator | a fixed LCG: `generate(seed, i)` | The same samples on every run, in every lesson, in both languages. |
 | Console | `board.console(fmt, args)`, one locked line at a time | Only `RESULT`/`FAIL`/`FATAL` lines reach semihosting (the board's rule). |
 | Verdict | `check(cond, fmt, args)`, `finish(summary)` | Counts failed checks; prints `RESULT: PASS|FAIL (...)` and ends the run (`board.hw_result`). |
-| SD log (from lesson 15) | a logger thread owning FatFs on the existing FAT32 volume, files in `/tests` | One owner for the card; read back and CRC-checked at the end. |
+| SD log (from lesson 16) | a logger thread owning FatFs on the existing FAT32 volume, files in `/tests` | One owner for the card; read back and CRC-checked at the end. |
 | A second interrupt (from lesson 03) | `second_timer`: the core's ARM virtual generic timer (CNTV, GIC PPI INTID 27), armed on and interrupting the core that starts it; `nowUs()` reads the BCM2711 System Timer's 1 MHz counter | An interrupt source independent of the 1 ms tick (INTID 30): it makes preemption asynchronous and measurable. |
 
 **The second interrupt.** The kernel's tick is the ARM generic timer's
@@ -261,18 +261,19 @@ each lesson README names the Zig ones: `uos.rtos.Thread`, `rtos.Mutex`,
 | 04 | `clocks` | `sysclock`, `hrclock`, `rtclock`; `sleepFor`, `sleepUntil`; timing code | the clocks against the System Timer; the sort timed; an absolute and a relative sampler | part A also on core 1; absolute samplers on cores 1–3 |
 | 05 | `mutex` | `Mutex` (normal, errorcheck, recursive), `tryLock`, `timedLock` | 4 threads push on one shared list without and with a lock; the three types; waiting with a limit | the 4 threads one per core: real contention; the holder on core 1 |
 | 06 | `priority-inversion` | mutex protocols `none`, `inherit`, `protect` | L holds the shared list's mutex 20 ms, H asks, M computes 100 ms; once per protocol | the three on one core, then `none` with M on another core |
-| 07 | `semaphores` | binary and counting semaphores | producer → bounded buffer → consumer | across cores |
-| 08 | `condvar` | condition variables, predicates, notify one/all | the lesson 07 pipeline | several consumers on several cores |
-| 09 | `flags` | event flags, thread flags | phases started by flags | the phases on different cores |
-| 10 | `message-queue` | typed queues, priorities, timed send/receive | a 3-stage pipeline | one stage per core |
-| 11 | `memory` | memory pools, allocators, statistics | samples from a pool | the pool shared by 4 cores |
-| 12 | `timers` | software timers, callbacks | sampling driven by a timer | callbacks feeding workers on other cores |
-| 13 | `interrupts` | handlers, critical sections, interrupt-to-thread latency | C1 and the tick update a shared counter | C1 routed to each core in turn |
-| 14 | `thread-control` | suspend/resume, interrupt, kill, states, stack usage | a worker paused, resumed, killed | the same on another core |
-| 15 | `sd-card` | a logger thread owning the SD card | every line to the UART and the card | lines from all 4 cores through the one logger |
-| 16 | `parallel` | splitting work, merging, measuring | the reference time on one core | per-core sort + merge, the speed-up |
-| 17 | `balancing` | threads without affinity, migration | 8 workers time-sliced | 8 floating workers over 4 cores |
-| 18 | `capstone` | everything, with the SD log | rounds of create/destroy | the same over 4 cores |
+| 07 | `semaphores` | binary and counting semaphores, `tryWait`, `timedWait`, a post from an ISR | producer → 8-slot bounded buffer → consumer; the semantics; the ISR posting 50 times | producer and consumer on cores 1 and 2, the waiter on core 2 |
+| 08 | `critical-sections` | interrupt vs scheduler critical sections: what each excludes, what each costs | a counter updated by a thread and by the second timer's ISR, under each | the scheduler lock of one core vs the other cores |
+| 09 | `condvar` | condition variables, predicates, notify one/all | the lesson 07 pipeline | several consumers on several cores |
+| 10 | `flags` | event flags, thread flags | phases started by flags | the phases on different cores |
+| 11 | `message-queue` | typed queues, priorities, timed send/receive | a 3-stage pipeline | one stage per core |
+| 12 | `memory` | memory pools, allocators, statistics | samples from a pool | the pool shared by 4 cores |
+| 13 | `timers` | software timers, callbacks | sampling driven by a timer | callbacks feeding workers on other cores |
+| 14 | `interrupts` | handlers (the critical sections are lesson 08), interrupt-to-thread latency | C1 and the tick update a shared counter | C1 routed to each core in turn |
+| 15 | `thread-control` | suspend/resume, interrupt, kill, states, stack usage | a worker paused, resumed, killed | the same on another core |
+| 16 | `sd-card` | a logger thread owning the SD card | every line to the UART and the card | lines from all 4 cores through the one logger |
+| 17 | `parallel` | splitting work, merging, measuring | the reference time on one core | per-core sort + merge, the speed-up |
+| 18 | `balancing` | threads without affinity, migration | 8 workers time-sliced | 8 floating workers over 4 cores |
+| 19 | `capstone` | everything, with the SD log | rounds of create/destroy | the same over 4 cores |
 
 ## 4. Where it lives and how it is built
 
