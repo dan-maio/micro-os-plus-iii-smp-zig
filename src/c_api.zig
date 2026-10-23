@@ -1169,7 +1169,7 @@ const api = struct {
     }
 
     pub fn os_memory_allocate(m: *anyopaque, bytes: usize, alignment: usize) callconv(.c) ?*anyopaque {
-        const scs = scheduler.CriticalSection.enter();
+        const scs = scheduler.KernelCriticalSection.enter();
         defer scs.exit();
         return heapOf(m).allocate(bytes, if (alignment == 0) 8 else alignment);
     }
@@ -1177,13 +1177,13 @@ const api = struct {
     pub fn os_memory_deallocate(m: *anyopaque, addr: ?*anyopaque, bytes: usize, alignment: usize) callconv(.c) void {
         _ = alignment;
         const a = addr orelse return;
-        const scs = scheduler.CriticalSection.enter();
+        const scs = scheduler.KernelCriticalSection.enter();
         defer scs.exit();
         heapOf(m).deallocate(@ptrCast(a), bytes);
     }
 
     pub fn os_memory_reset(m: *anyopaque) callconv(.c) void {
-        const scs = scheduler.CriticalSection.enter();
+        const scs = scheduler.KernelCriticalSection.enter();
         defer scs.exit();
         heapOf(m).reset();
     }

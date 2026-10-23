@@ -43,28 +43,28 @@ pub const Locked = struct {
 
     fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
         const self: *Locked = @ptrCast(@alignCast(ctx));
-        const scs = scheduler.CriticalSection.enter();
+        const scs = scheduler.KernelCriticalSection.enter();
         defer scs.exit();
         return self.child.vtable.alloc(self.child.ptr, len, alignment, ret_addr);
     }
 
     fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
         const self: *Locked = @ptrCast(@alignCast(ctx));
-        const scs = scheduler.CriticalSection.enter();
+        const scs = scheduler.KernelCriticalSection.enter();
         defer scs.exit();
         return self.child.vtable.resize(self.child.ptr, memory, alignment, new_len, ret_addr);
     }
 
     fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
         const self: *Locked = @ptrCast(@alignCast(ctx));
-        const scs = scheduler.CriticalSection.enter();
+        const scs = scheduler.KernelCriticalSection.enter();
         defer scs.exit();
         return self.child.vtable.remap(self.child.ptr, memory, alignment, new_len, ret_addr);
     }
 
     fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
         const self: *Locked = @ptrCast(@alignCast(ctx));
-        const scs = scheduler.CriticalSection.enter();
+        const scs = scheduler.KernelCriticalSection.enter();
         defer scs.exit();
         self.child.vtable.free(self.child.ptr, memory, alignment, ret_addr);
     }

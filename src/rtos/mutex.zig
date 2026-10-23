@@ -136,7 +136,7 @@ pub const Mutex = struct {
             if (mx.protocol == .protect) {
                 mx.boosted_prio = mx.prio_ceiling;
                 if (mx.boosted_prio > th.priorityInherited()) {
-                    const us = scheduler.UncriticalSection.enter();
+                    const us = scheduler.KernelUncriticalSection.enter();
                     defer us.exit();
                     th.setPriorityInherited(mx.boosted_prio) catch {};
                 }
@@ -175,7 +175,7 @@ pub const Mutex = struct {
                 if (mx.boosted_prio > o.priorityInherited()) {
                     {
                         // Let the owner run with the boosted priority.
-                        const us = scheduler.UncriticalSection.enter();
+                        const us = scheduler.KernelUncriticalSection.enter();
                         defer us.exit();
                         if (mx.owner == o) o.setPriorityInherited(mx.boosted_prio) catch {};
                     }
@@ -193,7 +193,7 @@ pub const Mutex = struct {
     pub fn internalUnlock(mx: *Mutex, th: *Thread) Error!void {
         if (!mx.recoverable) return error.NotRecoverable;
 
-        const scs = scheduler.CriticalSection.enter();
+        const scs = scheduler.KernelCriticalSection.enter();
         defer scs.exit();
 
         if (mx.owner == th) {
@@ -264,7 +264,7 @@ pub const Mutex = struct {
         if (crt.isInterrupted()) return error.Interrupted;
 
         {
-            const scs = scheduler.CriticalSection.enter();
+            const scs = scheduler.KernelCriticalSection.enter();
             defer scs.exit();
             if (mx.internalTryLock(crt)) |_| return else |err| if (err != error.WouldBlock) return err;
         }
@@ -272,7 +272,7 @@ pub const Mutex = struct {
         var node: lists.WaitingThreadNode = .{ .thread = crt };
         while (true) {
             {
-                const scs = scheduler.CriticalSection.enter();
+                const scs = scheduler.KernelCriticalSection.enter();
                 defer scs.exit();
                 if (mx.internalTryLock(crt)) |_| return else |err| if (err != error.WouldBlock) return err;
                 {
@@ -287,7 +287,7 @@ pub const Mutex = struct {
             // unlock.
             scheduler.internalUnlinkNode(&node);
             if (crt.isInterrupted()) {
-                const scs = scheduler.CriticalSection.enter();
+                const scs = scheduler.KernelCriticalSection.enter();
                 defer scs.exit();
                 if (mx.boosted_prio != priority.none) {
                     var max_prio: Priority = priority.none;
@@ -296,7 +296,7 @@ pub const Mutex = struct {
                     if (max_prio != priority.none) {
                         mx.boosted_prio = max_prio;
                         if (mx.owner) |o| {
-                            const us = scheduler.UncriticalSection.enter();
+                            const us = scheduler.KernelUncriticalSection.enter();
                             defer us.exit();
                             o.setPriorityInherited(max_prio) catch {};
                         }
@@ -316,7 +316,7 @@ pub const Mutex = struct {
         if (tr.mutex) trace.print("Mutex.tryLock() @{*} {s} by {*} {s}\n", .{ mx, mx.name, crt, crt.name });
         if (interrupts.inHandlerMode()) return error.NotPermitted;
         if (!mx.recoverable) return error.NotRecoverable;
-        const scs = scheduler.CriticalSection.enter();
+        const scs = scheduler.KernelCriticalSection.enter();
         defer scs.exit();
         return mx.internalTryLock(crt);
     }
@@ -331,7 +331,7 @@ pub const Mutex = struct {
         if (crt.isInterrupted()) return error.Interrupted;
 
         {
-            const scs = scheduler.CriticalSection.enter();
+            const scs = scheduler.KernelCriticalSection.enter();
             defer scs.exit();
             if (mx.internalTryLock(crt)) |_| return else |err| if (err != error.WouldBlock) return err;
         }
@@ -343,7 +343,7 @@ pub const Mutex = struct {
 
         while (true) {
             {
-                const scs = scheduler.CriticalSection.enter();
+                const scs = scheduler.KernelCriticalSection.enter();
                 defer scs.exit();
                 if (mx.internalTryLock(crt)) |_| return else |err| if (err != error.WouldBlock) return err;
                 {
@@ -365,7 +365,7 @@ pub const Mutex = struct {
             if (err) |e| {
                 // This thread no longer waits: recompute the boost from the
                 // remaining waiters.
-                const scs = scheduler.CriticalSection.enter();
+                const scs = scheduler.KernelCriticalSection.enter();
                 defer scs.exit();
                 if (mx.boosted_prio != priority.none) {
                     var max_prio: Priority = priority.none;
@@ -374,7 +374,7 @@ pub const Mutex = struct {
                     if (max_prio != priority.none) {
                         mx.boosted_prio = max_prio;
                         if (mx.owner) |o| {
-                            const us = scheduler.UncriticalSection.enter();
+                            const us = scheduler.KernelUncriticalSection.enter();
                             defer us.exit();
                             o.setPriorityInherited(max_prio) catch {};
                         }
@@ -422,7 +422,7 @@ pub const Mutex = struct {
     /// Return the mutex to the initial state, waking all waiters.
     pub fn reset(mx: *Mutex) Error!void {
         if (interrupts.inHandlerMode()) return error.NotPermitted;
-        const scs = scheduler.CriticalSection.enter();
+        const scs = scheduler.KernelCriticalSection.enter();
         defer scs.exit();
         mx.internalInit();
     }

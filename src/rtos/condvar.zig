@@ -75,7 +75,7 @@ pub const ConditionVariable = struct {
         {
             // Link first, then release the mutex, all without a switch, so
             // a signal between the two cannot be lost.
-            const scs = scheduler.CriticalSection.enter();
+            const scs = scheduler.KernelCriticalSection.enter();
             defer scs.exit();
             {
                 const cs = interrupts.CriticalSection.enter();

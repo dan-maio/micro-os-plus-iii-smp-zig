@@ -161,6 +161,43 @@ pub const CriticalSection = struct {
     }
 };
 
+/// The kernel's own critical section: what the kernel's code takes to keep
+/// its shared data -- the heap, the objects' internals -- consistent. On a
+/// port with `setKernelLocked` (the SMP aarch64 port: interrupts masked on
+/// the core and the kernel spinlock held) it is apart from the application's
+/// `CriticalSection`, which then only stops this core's thread switches;
+/// elsewhere it is the scheduler lock, as before.
+pub const KernelCriticalSection = struct {
+    state: bool,
+
+    const has_kernel_lock = @hasDecl(port.scheduler, "setKernelLocked");
+
+    pub inline fn enter() KernelCriticalSection {
+        return .{ .state = if (has_kernel_lock) port.scheduler.setKernelLocked(true) else lock() };
+    }
+
+    pub inline fn exit(kcs: KernelCriticalSection) void {
+        if (has_kernel_lock) _ = port.scheduler.setKernelLocked(kcs.state) else _ = setLocked(kcs.state);
+    }
+};
+
+/// The kernel's critical section released until `exit()` (where kernel code
+/// inside one must let a switch happen: a yield, a priority change), then
+/// restored.
+pub const KernelUncriticalSection = struct {
+    state: bool,
+
+    const has_kernel_lock = @hasDecl(port.scheduler, "setKernelLocked");
+
+    pub inline fn enter() KernelUncriticalSection {
+        return .{ .state = if (has_kernel_lock) port.scheduler.setKernelLocked(false) else unlock() };
+    }
+
+    pub inline fn exit(kus: KernelUncriticalSection) void {
+        if (has_kernel_lock) _ = port.scheduler.setKernelLocked(kus.state) else _ = setLocked(kus.state);
+    }
+};
+
 /// Thread switching enabled until `exit()`, even inside a critical section.
 pub const UncriticalSection = struct {
     state: bool,

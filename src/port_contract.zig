@@ -31,6 +31,9 @@
 //!     pub fn start() noreturn;            // switches to the first thread
 //!     pub fn setLocked(locked: bool) bool; // returns the previous state
 //!     pub fn isLocked() bool;
+//!     pub fn setKernelLocked(locked: bool) bool; // optional: the kernel's own
+//!                                                // critical section, apart
+//!                                                // from setLocked (classic)
 //!     pub fn reschedule() void;           // request a context switch
 //!     pub fn waitForInterrupt() void;
 //!     pub fn cpuId() u32;                 // 0 on a single-CPU build

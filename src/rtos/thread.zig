@@ -282,7 +282,7 @@ pub const Thread = struct {
         });
 
         {
-            const scs = scheduler.CriticalSection.enter();
+            const scs = scheduler.KernelCriticalSection.enter();
             defer scs.exit();
 
             th.prio_assigned = attr.priority;
@@ -580,7 +580,7 @@ pub const Thread = struct {
         if (tr.thread) trace.print("Thread.internalExit() @{*} {s}\n", .{ th, th.name });
         assert(!interrupts.inHandlerMode());
         {
-            const scs = scheduler.CriticalSection.enter();
+            const scs = scheduler.KernelCriticalSection.enter();
             defer scs.exit();
             {
                 const cs = interrupts.CriticalSection.enter();
@@ -646,7 +646,7 @@ pub const Thread = struct {
         }
 
         {
-            const scs = scheduler.CriticalSection.enter();
+            const scs = scheduler.KernelCriticalSection.enter();
             defer scs.exit();
             // Release the mutexes the thread still owns.
             while (th.mutexes.popFirst()) |links| {
@@ -672,7 +672,7 @@ pub const Thread = struct {
         if (tr.thread) trace.print("Thread.kill() @{*} {s}\n", .{ th, th.name });
         if (interrupts.inHandlerMode()) return error.NotPermitted;
 
-        const scs = scheduler.CriticalSection.enter();
+        const scs = scheduler.KernelCriticalSection.enter();
         defer scs.exit();
 
         if (ncpu > 1) {
@@ -701,7 +701,7 @@ pub const Thread = struct {
                     port.scheduler.ipi(@intCast(busy_cpu));
                 }
                 {
-                    const us = scheduler.UncriticalSection.enter();
+                    const us = scheduler.KernelUncriticalSection.enter();
                     defer us.exit();
                     this_thread.yield();
                 }
@@ -732,7 +732,7 @@ pub const Thread = struct {
         if (!we_claimed) {
             // Someone else is destroying it; wait until done.
             while (th.getState() != .destroyed) {
-                const us = scheduler.UncriticalSection.enter();
+                const us = scheduler.KernelUncriticalSection.enter();
                 defer us.exit();
                 this_thread.yield();
             }
