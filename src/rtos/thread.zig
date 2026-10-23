@@ -454,12 +454,14 @@ pub const Thread = struct {
         if (interrupts.inHandlerMode()) return error.NotPermitted;
         if (prio >= prio_levels.@"error") return error.InvalidArgument;
         if (prio == th.prio_inherited) return;
+        const prev_inherited = th.prio_inherited;
         th.prio_inherited = prio;
-        if (th.prio_inherited < th.prio_assigned) {
-            // Lowering the inherited priority below the assigned one does
-            // not change the effective priority.
-            return;
-        }
+        // The effective priority is the higher of the two; when it does not
+        // change, there is nothing to do. When it drops (a mutex unlocked,
+        // its boost undone), a thread above the new one may be ready -- the
+        // one the boost was for: the yield below lets it run now, not at the
+        // next tick.
+        if (th.prio_inherited < th.prio_assigned and prev_inherited <= th.prio_assigned) return;
         th.relinkReady();
         this_thread.yield();
     }
