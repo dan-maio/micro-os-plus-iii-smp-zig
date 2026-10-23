@@ -66,7 +66,9 @@ pub var boot_threads: [ncpu]Thread = blk: {
 
 pub const statistics = struct {
     pub var context_switches: u64 = 0;
-    pub var switch_timestamp: u64 = 0;
+    /// One per CPU: a CPU's switch charges the time since its own previous
+    /// switch, not since the last switch of any CPU.
+    pub var switch_timestamp: [ncpu]u64 = @splat(0);
     pub var cpu_cycles: u64 = 0;
 };
 
@@ -93,7 +95,7 @@ pub fn start() noreturn {
     if (config.options.statistics_context_switches) statistics.context_switches = 0;
     if (config.options.statistics_cpu_cycles) {
         statistics.cpu_cycles = 0;
-        statistics.switch_timestamp = clocks.hrclock.now();
+        statistics.switch_timestamp = @splat(clocks.hrclock.now());
     }
 
     is_preemptive = config.options.preemptive;
@@ -293,10 +295,10 @@ pub fn internalSwitchThreads() void {
 
     if (config.options.statistics_cpu_cycles) {
         const now = clocks.hrclock.now();
-        const delta = now -% statistics.switch_timestamp;
+        const delta = now -% statistics.switch_timestamp[cpu];
         statistics.cpu_cycles +%= delta;
         current_thread[cpu].?.statistics.cpu_cycles +%= delta;
-        statistics.switch_timestamp = now;
+        statistics.switch_timestamp[cpu] = now;
     }
 
     if (!locked()) {

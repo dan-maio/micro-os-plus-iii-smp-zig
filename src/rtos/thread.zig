@@ -700,6 +700,16 @@ pub const Thread = struct {
                 if (!busy) break;
 
                 if (busy_cpu < ncpu and busy_cpu != port.scheduler.cpuId()) {
+                    // A thread still running there would stay running after
+                    // the IPI: that CPU's switch re-links a running thread
+                    // and picks it again. Mark it suspended (the lock held
+                    // means it is in no kernel call now), so the switch
+                    // leaves it off the ready list and runs another.
+                    {
+                        const cs = interrupts.CriticalSection.enter();
+                        defer cs.exit();
+                        if (th.state == .running) th.state = .suspended;
+                    }
                     port.scheduler.ipi(@intCast(busy_cpu));
                 }
                 {
