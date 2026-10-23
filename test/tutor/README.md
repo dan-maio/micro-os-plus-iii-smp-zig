@@ -1,6 +1,6 @@
 # µOS++ IIIe tutorial (Zig) — the RTOS one step at a time (Raspberry Pi 4 B)
 
-Status: **in progress** (2026-10-23). Lessons 01 (bring-up), 02 (threads), 03 (priorities), 04 (clocks), 05 (mutex), 06 (priority inversion), 07 (semaphores), 08 (critical sections), 09 (condvar), 10 (flags), 11 (message queue) and 12 (memory) are done; the plan below
+Status: **in progress** (2026-10-23). Lessons 01 (bring-up), 02 (threads), 03 (priorities), 04 (clocks), 05 (mutex), 06 (priority inversion), 07 (semaphores), 08 (critical sections), 09 (condvar), 10 (flags), 11 (message queue), 12 (memory) and 13 (timers) are done; the plan below
 covers every lesson. This is the Zig version of the course written for the
 C++ kernel (golden workspace, `micro-os-plus-iii-aarch64/test/rpi4b/tutor/`):
 the same idea, the same base, the same lessons and the same data — a lesson
