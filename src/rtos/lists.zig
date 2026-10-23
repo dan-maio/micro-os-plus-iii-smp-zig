@@ -238,8 +238,28 @@ pub const WaitingThreadsList = struct {
         return true;
     }
 
+    /// Wake the threads waiting now, and only those. A woken thread whose
+    /// condition is still false (two waiters for one event flag, the first
+    /// one clearing it) links itself again into this list; waking it again
+    /// here would never end. So the current waiters are moved to a local list
+    /// first, and woken from there. A waiter that leaves meanwhile (timeout,
+    /// interrupt) unlinks itself from that list.
     pub fn resumeAll(wl: *WaitingThreadsList) void {
-        while (wl.resumeOne()) {}
+        const interrupts = @import("interrupts.zig");
+        var now: WaitingThreadsList = .{};
+        {
+            const cs = interrupts.CriticalSection.enter();
+            defer cs.exit();
+            if (wl.isEmpty()) return;
+            const first_links = wl.list.head.next.?;
+            const last_links = wl.list.head.prev.?;
+            now.list.head.next = first_links;
+            now.list.head.prev = last_links;
+            first_links.prev = &now.list.head;
+            last_links.next = &now.list.head;
+            wl.list.clear();
+        }
+        while (now.resumeOne()) {}
     }
 
     pub fn threads(wl: *WaitingThreadsList) ThreadIterator {
