@@ -107,6 +107,11 @@ export var _smp_klock: KernelLock = .{};
 var lock_state: [ncpu]bool = @splat(false); // the application's scheduler lock
 var kernel_lock_state: [ncpu]bool = @splat(false); // the kernel's own critical section
 var kernel_irq_state: [ncpu]u64 = @splat(0); // the interrupt section it entered
+// A switch asked for while this core was locked (reschedule() under the
+// scheduler lock or the kernel's section: a thread made ready, a priority
+// dropped), done when the last lock is released. Apart from ctx_pending, the
+// tick's time-slice request, which keeps its own rules.
+var resched_pending: [ncpu]bool = @splat(false);
 var ctx_pending: [ncpu]u32 = @splat(0);
 var in_isr: [ncpu]bool = @splat(false);
 export var _port_core_alive: [ncpu]u32 = @splat(0);
@@ -239,8 +244,9 @@ pub const scheduler = struct {
         const prev = lock_state[cpu];
         lock_state[cpu] = state;
         var switch_now = false;
-        if (prev and !state and !kernel_lock_state[cpu] and ctx_pending[cpu] != 0) {
+        if (prev and !state and !kernel_lock_state[cpu] and (ctx_pending[cpu] != 0 or resched_pending[cpu]) and uos.rtos.scheduler.started()) {
             ctx_pending[cpu] = 0;
+            resched_pending[cpu] = false;
             switch_now = true;
         }
         arch.restoreIrq(daif);
@@ -273,7 +279,16 @@ pub const scheduler = struct {
             const prev = kernel_lock_state[cpu];
             if (prev) {
                 kernel_lock_state[cpu] = false;
+                // A switch asked for inside (a thread made ready by an
+                // unlock, a signal) is done now, as at the scheduler unlock,
+                // not at the next tick.
+                var switch_now = false;
+                if (!lock_state[cpu] and resched_pending[cpu] and uos.rtos.scheduler.started()) {
+                    resched_pending[cpu] = false;
+                    switch_now = true;
+                }
                 interrupts.criticalExit(kernel_irq_state[cpu]);
+                if (switch_now) reschedule();
             }
             return prev;
         }
@@ -283,8 +298,13 @@ pub const scheduler = struct {
 
     pub fn reschedule() void {
         const cpu = arch.cpuId();
-        if (uos.rtos.scheduler.locked() or
-            (interrupts.inHandlerMode() and !uos.rtos.scheduler.isPreemptive())) return;
+        if (interrupts.inHandlerMode() and !uos.rtos.scheduler.isPreemptive()) return;
+        // Locked (the scheduler lock or the kernel's section): the switch is
+        // remembered, and done when the lock is released.
+        if (uos.rtos.scheduler.locked()) {
+            if (cpu < ncpu) resched_pending[cpu] = true;
+            return;
+        }
 
         if (ownerIs(cpu) and _smp_klock.depth > 0) {
             if (cpu < ncpu) ctx_pending[cpu] = 1;
@@ -516,6 +536,7 @@ fn bootSecondaryCore(cpu: u32) noreturn {
     g_core_stage[cpu] = 3;
     lock_state[cpu] = false;
     kernel_lock_state[cpu] = false;
+    resched_pending[cpu] = false;
     scheduler.reschedule();
     arch.enableIrq();
     while (true) arch.wfi();
