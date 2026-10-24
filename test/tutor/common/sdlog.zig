@@ -49,11 +49,14 @@ pub const Counters = struct {
     cpus: Atomic(u32) = .init(0), // the cores it ran on (a mask)
 };
 
-const Op = enum(u8) { line, sync, stop };
+const Op = enum(u8) { line, sync, stop, stream_open, stream_close, stream_write_async };
 
 const Message = struct {
     what: Op = .line,
     len: u8 = 0,
+    leaf: []const u8 = "", // .stream_open
+    data: []const u8 = &.{}, // .stream_write_async
+    done: ?*rtos.Semaphore = null, // .stream_write_async
     text: [line_max]u8 = undefined,
 };
 
@@ -70,6 +73,10 @@ var s_sd: sd.SdCard = .{};
 var s_buf: [buffer_bytes]u8 = undefined;
 var s_len: usize = 0;
 var s_crc: std.hash.Crc32 = .init(); // of what is on the card
+
+var s_stream: fatfs.Stream = .{};
+var s_file_ok = false; // the last stream open's or close's result
+var s_stream_errors = Atomic(u32).init(0);
 
 /// Called by the logger with every line, before it prints it.
 pub const Observer = *const fn (text: []const u8) void;
@@ -118,6 +125,19 @@ fn loggerBody(_: ?*anyopaque) ?*anyopaque {
                 _ = s_counters.messages.fetchAdd(1, .monotonic);
                 _ = s_counters.lines.fetchAdd(@intCast(std.mem.count(u8, t, "\n")), .monotonic);
                 _ = s_counters.bytes.fetchAdd(@intCast(t.len), .monotonic);
+            },
+            .stream_open => {
+                s_file_ok = if (s_card_used) s_stream.create(m.leaf) else true;
+                s_ack.post() catch {};
+            },
+            .stream_close => {
+                s_file_ok = if (s_card_used) s_stream.close() else true;
+                s_ack.post() catch {};
+            },
+            .stream_write_async => {
+                const ok = if (s_card_used) s_stream.write(m.data) else true;
+                if (!ok) _ = s_stream_errors.fetchAdd(1, .monotonic);
+                m.done.?.post() catch {};
             },
             .sync, .stop => {
                 flush(&s_counters.flushes_sync);
@@ -210,6 +230,60 @@ fn request(what: Op) void {
 /// Have the logger append what it holds to the card, and wait until it has.
 pub fn sync() void {
     request(.sync);
+}
+
+// ---- A file kept open (from lesson 19: the USB file, as it arrives) -------------
+
+fn streamRequest(m: Message) bool {
+    s_queue.typed.send(m, 0) catch {};
+    s_ack.wait() catch {};
+    return s_file_ok;
+}
+
+/// tests/<leaf> created and kept open; waits for the logger.
+pub fn streamOpen(leaf: []const u8) bool {
+    return streamRequest(.{ .what = .stream_open, .leaf = leaf });
+}
+
+/// The file closed (its directory entry written); waits for the logger.
+pub fn streamClose() bool {
+    return streamRequest(.{ .what = .stream_close });
+}
+
+/// A piece written without waiting: the logger writes it in its turn, then
+/// posts `done`. The caller must not touch `data` before `done` is posted.
+/// Failed writes are counted (streamErrors()).
+pub fn streamWriteAsync(data: []const u8, done: *rtos.Semaphore) void {
+    s_queue.typed.send(.{ .what = .stream_write_async, .data = data, .done = done }, 0) catch {};
+}
+
+pub fn streamErrors() u32 {
+    return s_stream_errors.load(.monotonic);
+}
+
+/// CRC-32 (IEEE 802.3, as zlib's), continued from `crc` (0 to start).
+pub fn crc32(crc: u32, data: []const u8) u32 {
+    var h: std.hash.Crc32 = .{ .crc = ~crc };
+    h.update(data);
+    return h.final();
+}
+
+pub const FileCrc = struct { size: u32, crc: u32 };
+
+/// After stop(): tests/<leaf> read back from the card, 4 KiB at a time: its
+/// size and CRC-32. Null when it cannot be read (or without a card).
+pub fn fileCrc(leaf: []const u8) ?FileCrc {
+    if (!s_card_used) return null;
+    const size = fatfs.fileSize(leaf) orelse return null;
+    var crc: u32 = 0;
+    var off: u32 = 0;
+    while (off < size) {
+        const n: u32 = @min(size - off, s_buf.len);
+        if (!fatfs.loadFileAt(leaf, off, s_buf[0..n])) return null;
+        crc = crc32(crc, s_buf[0..n]);
+        off += n;
+    }
+    return .{ .size = size, .crc = crc };
 }
 
 /// sync(), then the logger returns; it is joined and destroyed.

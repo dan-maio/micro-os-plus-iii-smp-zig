@@ -36,6 +36,12 @@ const Test = struct {
     /// A tutorial lesson: it imports the course's shared base as `tutor`
     /// (test/tutor/common/tutor.zig).
     tutor: bool = false,
+    /// The DWC2 USB device driver (drivers/usb_dwc2.zig) and the VideoCore
+    /// mailbox it powers the block with (drivers/mailbox.zig).
+    usb: bool = false,
+    /// An application of many sources (the tutorial's capstone): the root of
+    /// its module, imported by the test as `capstone`.
+    app: ?[]const u8 = null,
 };
 
 const cmsis_rv_sources = [_][]const u8{
@@ -128,6 +134,8 @@ const tests = [_]Test{
     .{ .name = "tutor-17-parallel-4cpu", .dir = "tutor/17-parallel/4cpu", .tutor = true },
     .{ .name = "tutor-18-balancing-1cpu", .dir = "tutor/18-balancing/1cpu", .tutor = true },
     .{ .name = "tutor-18-balancing-4cpu", .dir = "tutor/18-balancing/4cpu", .tutor = true },
+    .{ .name = "tutor-19-capstone-1cpu", .dir = "tutor/19-capstone/1cpu", .tutor = true, .devices = true, .usb = true, .app = "test/tutor/19-capstone/app/capstone.zig" },
+    .{ .name = "tutor-19-capstone-4cpu", .dir = "tutor/19-capstone/4cpu", .tutor = true, .devices = true, .usb = true, .app = "test/tutor/19-capstone/app/capstone.zig" },
 };
 
 pub fn build(b: *std.Build) void {
@@ -298,6 +306,25 @@ pub fn addFirmware(
             sdlog_mod.addImport("sd", sd_mod);
             sdlog_mod.addImport("fatfs", fatfs_mod);
             app_mod.addImport("sdlog", sdlog_mod);
+
+            // The capstone: its application module, with everything its
+            // domains import.
+            if (options.test_def.app) |root| {
+                const cap_mod = b.createModule(.{ .root_source_file = b.path(root) });
+                cap_mod.addImport("uos", uos_mod);
+                cap_mod.addImport("board", test_board_mod);
+                cap_mod.addImport("tutor", tm);
+                cap_mod.addImport("sdlog", sdlog_mod);
+                if (options.test_def.usb) {
+                    const mailbox_mod = b.createModule(.{ .root_source_file = b.path("drivers/mailbox.zig") });
+                    const usb_mod = b.createModule(.{ .root_source_file = b.path("drivers/usb_dwc2.zig") });
+                    usb_mod.addImport("uos", uos_mod);
+                    usb_mod.addImport("mailbox", mailbox_mod);
+                    cap_mod.addImport("usb_dwc2", usb_mod);
+                    cap_mod.addImport("mailbox", mailbox_mod);
+                }
+                app_mod.addImport("capstone", cap_mod);
+            }
         }
     }
 

@@ -1,7 +1,10 @@
 # µOS++ IIIe tutorial (Zig) — the RTOS one step at a time (Raspberry Pi 4 B)
 
-Status: **in progress** (2026-10-24). Lessons 01 (bring-up), 02 (threads), 03 (priorities), 04 (clocks), 05 (mutex), 06 (priority inversion), 07 (semaphores), 08 (critical sections), 09 (condvar), 10 (flags), 11 (message queue), 12 (memory), 13 (timers), 14 (interrupts), 15 (thread control), 16 (sd card), 17 (parallel) and 18 (balancing) are done; the plan below
-covers every lesson. This is the Zig version of the course written for the
+Status: **complete** (2026-10-24). All 19 lessons are done, each in a
+one-CPU and a four-CPU version, each passing under QEMU and on the board:
+01 (bring-up) to 18 (balancing), and 19 (capstone: one application of many
+sources, the SD card and the USB device, run with its host transfer by
+`19-capstone/run.sh`). The plan below covers every lesson. This is the Zig version of the course written for the
 C++ kernel (golden workspace, `micro-os-plus-iii-aarch64/test/rpi4b/tutor/`):
 the same idea, the same base, the same lessons and the same data — a lesson
 prints the same sorted order, maximum and checksum in both languages.

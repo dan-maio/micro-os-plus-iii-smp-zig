@@ -222,6 +222,36 @@ pub fn appendFile(leaf: []const u8, data: []const u8) bool {
     return writeFile(leaf, data, ff.FA_OPEN_APPEND);
 }
 
+/// A file kept open and written in pieces: each piece is then only its data
+/// sectors (and a FAT entry per cluster); the directory entry is written at
+/// the close (from the tutorial's lesson 19: the USB file, as it arrives).
+pub const Stream = struct {
+    f: ff.FIL = undefined,
+    open: bool = false,
+
+    /// "tests/<leaf>" created (truncated) and kept open.
+    pub fn create(s: *Stream, leaf: []const u8) bool {
+        if (!g_mounted or !g_dir_ok) return false;
+        var path: [64]u8 = undefined;
+        s.open = fatOk(ff.f_open(&s.f, testsPath(&path, leaf), openMode(ff.FA_CREATE_ALWAYS | ff.FA_WRITE)));
+        return s.open;
+    }
+
+    pub fn write(s: *Stream, data: []const u8) bool {
+        if (!s.open) return false;
+        var written: ff.UINT = 0;
+        var fr = ff.f_write(&s.f, data.ptr, @intCast(data.len), &written);
+        if (fr == ff.FR_OK and written != data.len) fr = ff.FR_DISK_ERR;
+        return fatOk(fr);
+    }
+
+    pub fn close(s: *Stream) bool {
+        if (!s.open) return false;
+        s.open = false;
+        return fatOk(ff.f_close(&s.f));
+    }
+};
+
 pub fn loadFileAt(leaf: []const u8, offset: u32, data: []u8) bool {
     if (!g_mounted or !g_dir_ok) return false;
     var path: [64]u8 = undefined;
