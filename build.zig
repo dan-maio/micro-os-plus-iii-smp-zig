@@ -126,6 +126,8 @@ const tests = [_]Test{
     .{ .name = "tutor-16-sd-card-4cpu", .dir = "tutor/16-sd-card/4cpu", .tutor = true, .devices = true },
     .{ .name = "tutor-17-parallel-1cpu", .dir = "tutor/17-parallel/1cpu", .tutor = true },
     .{ .name = "tutor-17-parallel-4cpu", .dir = "tutor/17-parallel/4cpu", .tutor = true },
+    .{ .name = "tutor-18-balancing-1cpu", .dir = "tutor/18-balancing/1cpu", .tutor = true },
+    .{ .name = "tutor-18-balancing-4cpu", .dir = "tutor/18-balancing/4cpu", .tutor = true },
 };
 
 pub fn build(b: *std.Build) void {

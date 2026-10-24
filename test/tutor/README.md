@@ -1,6 +1,6 @@
 # µOS++ IIIe tutorial (Zig) — the RTOS one step at a time (Raspberry Pi 4 B)
 
-Status: **in progress** (2026-10-24). Lessons 01 (bring-up), 02 (threads), 03 (priorities), 04 (clocks), 05 (mutex), 06 (priority inversion), 07 (semaphores), 08 (critical sections), 09 (condvar), 10 (flags), 11 (message queue), 12 (memory), 13 (timers), 14 (interrupts), 15 (thread control), 16 (sd card) and 17 (parallel) are done; the plan below
+Status: **in progress** (2026-10-24). Lessons 01 (bring-up), 02 (threads), 03 (priorities), 04 (clocks), 05 (mutex), 06 (priority inversion), 07 (semaphores), 08 (critical sections), 09 (condvar), 10 (flags), 11 (message queue), 12 (memory), 13 (timers), 14 (interrupts), 15 (thread control), 16 (sd card), 17 (parallel) and 18 (balancing) are done; the plan below
 covers every lesson. This is the Zig version of the course written for the
 C++ kernel (golden workspace, `micro-os-plus-iii-aarch64/test/rpi4b/tutor/`):
 the same idea, the same base, the same lessons and the same data — a lesson
@@ -301,7 +301,7 @@ each lesson README names the Zig ones: `uos.rtos.Thread`, `rtos.Mutex`,
 | 15 | `thread-control` | suspend/resume, interrupt, kill, states, stack usage | a worker paused, resumed, killed | the same on another core |
 | 16 | `sd-card` | a logger thread owning the SD card, the queue to it; who waits for whom | every line to the UART and the card; a burst with the logger above, then below the producer | lines from three producers on cores 1–3 through the one logger on core 0 |
 | 17 | `parallel` | splitting work, merging, measuring; Amdahl | the reference time on one core, then split in four on it | the four parts one per core; the speed-up and its bound |
-| 18 | `balancing` | threads without affinity, migration | 8 workers time-sliced | 8 floating workers over 4 cores |
+| 18 | `balancing` | time slices, threads without affinity, migration, fairness, affinity at run time | 8 workers time-sliced, their shares | 8 floating workers over 4 cores; one moved at run time |
 | 19 | `capstone` | everything, with the SD log and the USB device (a DWC2 gadget owned by one thread, as `rpi-zero-2w/usb_test`; host: `usb_test_host --big <file>`) | rounds of create/destroy; a file from the host stored in `tests/` and echoed | the same over 4 cores; the USB service, the SD owner and the console on different cores |
 
 ## 4. Where it lives and how it is built
