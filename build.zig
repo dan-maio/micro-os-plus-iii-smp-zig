@@ -122,6 +122,8 @@ const tests = [_]Test{
     .{ .name = "tutor-14-interrupts-4cpu", .dir = "tutor/14-interrupts/4cpu", .tutor = true },
     .{ .name = "tutor-15-thread-control-1cpu", .dir = "tutor/15-thread-control/1cpu", .tutor = true },
     .{ .name = "tutor-15-thread-control-4cpu", .dir = "tutor/15-thread-control/4cpu", .tutor = true },
+    .{ .name = "tutor-16-sd-card-1cpu", .dir = "tutor/16-sd-card/1cpu", .tutor = true, .devices = true },
+    .{ .name = "tutor-16-sd-card-4cpu", .dir = "tutor/16-sd-card/4cpu", .tutor = true, .devices = true },
 };
 
 pub fn build(b: *std.Build) void {
@@ -251,11 +253,12 @@ pub fn addFirmware(
 
     // The tutorial's lessons share the course's base, as a module: Zig does
     // not let a test import a file outside its own folder.
+    var tutor_mod: ?*std.Build.Module = null;
     if (options.test_def.tutor) {
-        const tutor_mod = b.createModule(.{ .root_source_file = b.path("test/tutor/common/tutor.zig") });
-        tutor_mod.addImport("uos", uos_mod);
-        tutor_mod.addImport("board", test_board_mod);
-        app_mod.addImport("tutor", tutor_mod);
+        tutor_mod = b.createModule(.{ .root_source_file = b.path("test/tutor/common/tutor.zig") });
+        tutor_mod.?.addImport("uos", uos_mod);
+        tutor_mod.?.addImport("board", test_board_mod);
+        app_mod.addImport("tutor", tutor_mod.?);
     }
 
     // The SD card (EMMC2) and FatFs on its existing FAT32 volume, as the C++
@@ -280,6 +283,18 @@ pub fn addFirmware(
 
         app_mod.addImport("sd", sd_mod);
         app_mod.addImport("fatfs", fatfs_mod);
+
+        // The tutorial's SD log (from lesson 16), for the lessons that reach
+        // the card.
+        if (tutor_mod) |tm| {
+            const sdlog_mod = b.createModule(.{ .root_source_file = b.path("test/tutor/common/sdlog.zig") });
+            sdlog_mod.addImport("uos", uos_mod);
+            sdlog_mod.addImport("board", test_board_mod);
+            sdlog_mod.addImport("tutor", tm);
+            sdlog_mod.addImport("sd", sd_mod);
+            sdlog_mod.addImport("fatfs", fatfs_mod);
+            app_mod.addImport("sdlog", sdlog_mod);
+        }
     }
 
     const root_mod = b.createModule(.{

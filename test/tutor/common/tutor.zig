@@ -252,10 +252,22 @@ pub fn reference(seed: u32, first_id: u32, n_in: u32) Expected {
 
 var g_failures = std.atomic.Value(u32).init(0);
 
+/// Where check() prints its lines: the console when null (the default),
+/// else this function (from lesson 16, the SD log's logger thread).
+pub const Output = *const fn (text: []const u8) void;
+pub var output: ?Output = null;
+
 /// Print "  [ok] what" or "  [BAD] what" and count a failure.
 pub fn check(cond: bool, comptime fmt: []const u8, args: anytype) bool {
     if (!cond) _ = g_failures.fetchAdd(1, .monotonic);
-    board.console("  [{s}] " ++ fmt ++ "\n", .{if (cond) "ok" else "BAD"} ++ args);
+    if (output) |out| {
+        var buf: [220]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&buf);
+        w.print("  [{s}] " ++ fmt ++ "\n", .{if (cond) "ok" else "BAD"} ++ args) catch {};
+        out(w.buffered());
+    } else {
+        board.console("  [{s}] " ++ fmt ++ "\n", .{if (cond) "ok" else "BAD"} ++ args);
+    }
     return cond;
 }
 

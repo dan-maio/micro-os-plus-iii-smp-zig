@@ -1,6 +1,6 @@
 # µOS++ IIIe tutorial (Zig) — the RTOS one step at a time (Raspberry Pi 4 B)
 
-Status: **in progress** (2026-10-23). Lessons 01 (bring-up), 02 (threads), 03 (priorities), 04 (clocks), 05 (mutex), 06 (priority inversion), 07 (semaphores), 08 (critical sections), 09 (condvar), 10 (flags), 11 (message queue), 12 (memory), 13 (timers), 14 (interrupts) and 15 (thread control) are done; the plan below
+Status: **in progress** (2026-10-24). Lessons 01 (bring-up), 02 (threads), 03 (priorities), 04 (clocks), 05 (mutex), 06 (priority inversion), 07 (semaphores), 08 (critical sections), 09 (condvar), 10 (flags), 11 (message queue), 12 (memory), 13 (timers), 14 (interrupts), 15 (thread control) and 16 (sd card) are done; the plan below
 covers every lesson. This is the Zig version of the course written for the
 C++ kernel (golden workspace, `micro-os-plus-iii-aarch64/test/rpi4b/tutor/`):
 the same idea, the same base, the same lessons and the same data — a lesson
@@ -33,7 +33,7 @@ Kept deliberately small, written once, used unchanged by every lesson:
 | Data generator | a fixed LCG: `generate(seed, i)` | The same samples on every run, in every lesson, in both languages. |
 | Console | `board.console(fmt, args)`, one locked line at a time | Only `RESULT`/`FAIL`/`FATAL` lines reach semihosting (the board's rule). |
 | Verdict | `check(cond, fmt, args)`, `finish(summary)` | Counts failed checks; prints `RESULT: PASS|FAIL (...)` and ends the run (`board.hw_result`). |
-| SD log (from lesson 16) | a logger thread owning FatFs on the existing FAT32 volume, files in `/tests` | One owner for the card; read back and CRC-checked at the end. |
+| SD log (from lesson 16) | `common/sdlog.zig` (the `sdlog` module): a logger thread owning the UART and FatFs on the existing FAT32 volume, files in `/tests`; the other threads `say()` lines through a message queue | One owner for the card; read back and CRC-checked at the end. Only in the lessons marked `.devices = true`. |
 | A second interrupt (from lesson 03) | `second_timer`: the core's ARM virtual generic timer (CNTV, GIC PPI INTID 27), armed on and interrupting the core that starts it; `nowUs()` reads the BCM2711 System Timer's 1 MHz counter | An interrupt source independent of the 1 ms tick (INTID 30): it makes preemption asynchronous and measurable. |
 
 **The second interrupt.** The kernel's tick is the ARM generic timer's
@@ -168,7 +168,9 @@ larger value as the maximum. A lesson compares the list's `checksum()` and
   prints `[BAD]` (not mirrored: a semihosting call from cores 1–3 stops that
   core on this board).
 - `check(cond, fmt, args)` prints `  [ok] what` or `  [BAD] what` and counts
-  a failure (an atomic add, so any thread on any core may call it).
+  a failure (an atomic add, so any thread on any core may call it). It
+  prints on the console, or through `tutor.output` when set (from lesson
+  16: the SD log, while its logger runs).
 - `finish(summary)` prints `RESULT: PASS (summary)` and calls
   `board.hw_result.ok()`, or `RESULT: FAIL (N failed checks)` and
   `board.hw_result.fail()` (the kernel's `rtos.terminate()`: a semihosting
@@ -204,6 +206,33 @@ larger value as the maximum. A lesson compares the list's `checksum()` and
   build's `hwd`/`qemu` pair), so it is told at run time from the timer's
   frequency — 54 MHz on the Pi 4, 62.5 MHz under QEMU's `raspi4b`. A lesson
   checks its timing bounds strictly only on the board.
+
+#### The SD log: `sdlog` (from lesson 16)
+
+`common/sdlog.zig`, a module of its own (it imports the SD driver and
+FatFs), given by `build.zig` to the lessons marked `.tutor = true` and
+`.devices = true`:
+
+- `start(leaf, priority, core)` brings the card up on the board (when
+  `onHardware()`) — init, mount the existing FAT32 partition (never
+  formatted), `tests/`, the old `tests/<leaf>` removed — and creates the
+  logger thread; under QEMU only the logger. It then routes `check()`
+  through the log (`tutor.output`).
+- `say(fmt, args)` formats one line (at most 110 bytes) into a message and
+  queues it: `trySend()`, then `send()` if the queue (64 slots) is full;
+  true when it had to wait.
+- The logger takes each line, prints it on the UART (on the board with
+  `uart.putsUart()`, not mirrored: a semihosting call per line through the
+  probe costs more than the card), and gathers it in a 4 KiB buffer,
+  appended to the file when full, after 500 ms without a line, and on
+  `sync()`.
+- `sync()` sends a request through the same queue and waits on a semaphore
+  until the buffer is on the card; `stop()` does the same, then the logger
+  returns and is joined and destroyed.
+- `verify()` reads the file back: `.ok` when its size, CRC-32 and newlines
+  are those written, with no append failed.
+- `stats()` — what the logger did; `logger()` — its thread;
+  `setObserver(fn)` — called with every line.
 
 #### The start-up
 
@@ -270,10 +299,11 @@ each lesson README names the Zig ones: `uos.rtos.Thread`, `rtos.Mutex`,
 | 13 | `timers` | software timers, callbacks | sampling driven by a timer | callbacks feeding workers on other cores |
 | 14 | `interrupts` | handlers (the critical sections are lesson 08), interrupt-to-thread latency | C1 and the tick update a shared counter | C1 routed to each core in turn |
 | 15 | `thread-control` | suspend/resume, interrupt, kill, states, stack usage | a worker paused, resumed, killed | the same on another core |
-| 16 | `sd-card` | a logger thread owning the SD card | every line to the UART and the card | lines from all 4 cores through the one logger |
+| 16 | `sd-card` | a logger thread owning the SD card, the queue to it; who waits for whom | every line to the UART and the card; a burst with the logger above, then below the producer | lines from three producers on cores 1–3 through the one logger on core 0 |
 | 17 | `parallel` | splitting work, merging, measuring | the reference time on one core | per-core sort + merge, the speed-up |
 | 18 | `balancing` | threads without affinity, migration | 8 workers time-sliced | 8 floating workers over 4 cores |
 | 19 | `capstone` | everything, with the SD log | rounds of create/destroy | the same over 4 cores |
+| 20 | `usb` | a USB device (DWC2 gadget) owned by one thread, a file from the host to the SD card (as `rpi-zero-2w/usb_test`; host: `usb_test_host --big <file>`) | the file stored in `tests/` and echoed | the USB service, the SD owner and the console on different cores |
 
 ## 4. Where it lives and how it is built
 
@@ -281,6 +311,7 @@ each lesson README names the Zig ones: `uos.rtos.Thread`, `rtos.Mutex`,
 micro-os-plus-iii-aarch64/test/tutor/
 ├── README.md            this file (and README.pdf)
 ├── common/tutor.zig     the shared base (section 2), the `tutor` module
+├── common/sdlog.zig     the SD log (from lesson 16), the `sdlog` module
 ├── 01-bring-up/
 │   ├── README.md        the lesson (and README.pdf)
 │   ├── 1cpu/main.zig    -> test tutor-01-bring-up-1cpu   (board.options(1))
@@ -297,7 +328,8 @@ micro-os-plus-iii-aarch64/test/tutor/
 ```
 
 `.dir` is the source folder under `test/` (when it is not the test's name);
-`.tutor = true` gives the test the `tutor` module. The CPU count is not a
+`.tutor = true` gives the test the `tutor` module; `.devices = true` (the SD
+lessons, 16 and 19) also the SD driver, FatFs and the `sdlog` module. The CPU count is not a
 build option: each version's `uos_options = board.options(N)` sets it, so
 the Zig port needed no change to build with one CPU (the C++ port did:
 golden's step 0). The linker script defines `__data_start`/`__data_end`
