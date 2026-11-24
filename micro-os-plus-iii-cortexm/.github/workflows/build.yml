@@ -1,0 +1,58 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # The kernel repository, checked out as a sibling so that build.zig.zon's
+  # "../micro-os-plus-iii" path dependency resolves. Adjust to your fork.
+  KERNEL_REPO: YOUR_ORG/micro-os-plus-iii-zig
+
+  # MicroZig is a *path* dependency in build.zig.zon, pointed at a
+  # local-machine folder (../../../Downloads/MicroZIG-0.17.18/microzig).
+  # This job mirrors that location with a shallow clone of the upstream
+  # repository. If you make the zon path portable (e.g. a sibling ../microzig
+  # or a git URL), replace the "Checkout MicroZig" step accordingly.
+  MICROZIG_REPO: https://github.com/ZigEmbeddedGroup/microzig.git
+  MICROZIG_REF: 0.17.19
+
+jobs:
+  build:
+    name: build (cortexm)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this port
+        uses: actions/checkout@v4
+        with:
+          path: micro-os-plus-iii-cortexm
+
+      - name: Checkout the kernel (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KERNEL_REPO }}
+          path: micro-os-plus-iii
+
+      - name: Checkout MicroZig (path expected by build.zig.zon)
+        run: |
+          mkdir -p "${{ github.workspace }}/../../Downloads/MicroZIG-0.17.18"
+          git clone --depth 1 --branch "$MICROZIG_REF" "$MICROZIG_REPO" \
+            "${{ github.workspace }}/../../Downloads/MicroZIG-0.17.18/microzig"
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      # Build every test of every board. This is compile-only: running on the
+      # boards needs OpenOCD and real hardware. The cmsis-os-validator test is
+      # skipped automatically when the Arm CMSIS-RTOS validator xPack is not
+      # present (its -Dcmsis_rv folder).
+      - name: Build every board
+        working-directory: micro-os-plus-iii-cortexm
+        run: |
+          for board in pico2 pico pico2-rp2350b-psram weactf411 nucleof411 weactf412; do
+            echo "===== board: $board ====="
+            zig build -Dboard="$board"
+          done
