@@ -1,0 +1,38 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # The kernel repository, checked out as a sibling so that build.zig.zon's
+  # "../micro-os-plus-iii" path dependency resolves. Adjust to your fork.
+  KERNEL_REPO: YOUR_ORG/micro-os-plus-iii-zig
+
+jobs:
+  build:
+    name: build (aarch32)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this port
+        uses: actions/checkout@v4
+        with:
+          path: micro-os-plus-iii-aarch32
+
+      - name: Checkout the kernel (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KERNEL_REPO }}
+          path: micro-os-plus-iii
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      # Cross-compiles every test for the Luckfox Lyra (3x Cortex-A7). No
+      # MicroZig: the board's startup.S and linker.ld are this port's own.
+      - name: Build every test
+        working-directory: micro-os-plus-iii-aarch32
+        run: zig build
