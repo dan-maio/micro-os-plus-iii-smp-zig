@@ -1,0 +1,121 @@
+@page {
+    size: A4;
+    margin: 20mm 15mm 20mm 15mm;
+    @bottom-right {
+        content: counter(page) " / " counter(pages);
+        font-family: system-ui, sans-serif;
+        font-size: 8pt;
+        color: #666;
+    }
+    @bottom-left {
+        content: "µOS++ IIIe AArch32 & AArch64 SMP/AMP Architecture and Porting Guide";
+        font-family: system-ui, sans-serif;
+        font-size: 8pt;
+        color: #666;
+    }
+}
+
+body {
+    font-family: 'Liberation Sans', 'DejaVu Sans', Arial, sans-serif;
+    font-size: 9.5pt;
+    line-height: 1.5;
+    color: #1a1a1a;
+}
+
+h1 {
+    font-size: 18pt;
+    color: #0b3c5d;
+    border-bottom: 2px solid #0b3c5d;
+    padding-bottom: 4px;
+    margin-top: 0;
+}
+
+h2 {
+    font-size: 13pt;
+    color: #1d2731;
+    border-bottom: 1px solid #ccc;
+    padding-bottom: 2px;
+    margin-top: 18pt;
+    page-break-after: avoid;
+}
+
+h3 {
+    font-size: 10.5pt;
+    color: #328cc1;
+    margin-top: 12pt;
+    page-break-after: avoid;
+}
+
+h4 {
+    font-size: 9.5pt;
+    color: #444;
+    margin-top: 8pt;
+    page-break-after: avoid;
+}
+
+pre, code {
+    font-family: 'Liberation Mono', 'DejaVu Sans Mono', monospace;
+    font-size: 8pt;
+}
+
+code {
+    background-color: #f4f6f8;
+    padding: 1px 3px;
+    border-radius: 3px;
+    color: #b01a1a;
+}
+
+pre {
+    background-color: #f7f9fa;
+    border: 1px solid #e1e4e8;
+    border-radius: 4px;
+    padding: 8px 10px;
+    overflow-x: hidden;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    page-break-inside: avoid;
+}
+
+pre code {
+    background-color: transparent;
+    padding: 0;
+    color: #24292e;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 10pt 0;
+    font-size: 8.5pt;
+    page-break-inside: avoid;
+}
+
+th, td {
+    border: 1px solid #d0d7de;
+    padding: 5px 8px;
+    text-align: left;
+}
+
+th {
+    background-color: #f1f4f8;
+    color: #0b3c5d;
+    font-weight: bold;
+}
+
+tr:nth-child(even) {
+    background-color: #fcfdfe;
+}
+
+blockquote {
+    margin: 8pt 0;
+    padding: 4pt 10pt;
+    border-left: 3px solid #328cc1;
+    background-color: #f5f8fc;
+    color: #444;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid #e1e4e8;
+    margin: 12pt 0;
+}

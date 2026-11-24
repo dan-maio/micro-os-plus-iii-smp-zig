@@ -1,0 +1,8 @@
+.{
+    .name = .micro_os_plus_iii,
+    .fingerprint = 0x51fb917b8782169d,
+    .version = "7.0.0",
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{},
+    .paths = .{ "build.zig", "build.zig.zon", "src", "include", "tests", "LICENSE", "README.md" },
+}
