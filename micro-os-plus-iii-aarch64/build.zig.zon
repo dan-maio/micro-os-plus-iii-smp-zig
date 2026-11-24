@@ -1,0 +1,11 @@
+.{
+    .name = .micro_os_plus_iii_aarch64,
+    .fingerprint = 0x81034e58d9aabb68,
+    .version = "7.0.0",
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        // The portable kernel, the sibling repository.
+        .micro_os_plus_iii = .{ .path = "../micro-os-plus-iii" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "boards", "test", "LICENSE", "README.md" },
+}
